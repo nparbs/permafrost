@@ -1,0 +1,9 @@
+node_modules
+dist
+dist-server
+data
+shots
+.git
+.env
+.deploy.local.json
+*.log

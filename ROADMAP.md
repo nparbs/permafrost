@@ -55,7 +55,7 @@ The finale: plant charges on the Hearth's heat vents while it pulses freezing wa
 
 ## v0.2: Online shared world (works locally, not hosted yet)
 
-- [x] One Node server (ws + node:sqlite) serves the page and `/ws`, using the same pattern as Trailer Park Tamers (the Docker container is still to do)
+- [x] One Node server (ws + node:sqlite) serves the page and `/ws`, using the same pattern as Trailer Park Tamers, packed as one Docker container (`Dockerfile`, `docker-compose.yml`, see docs/hosting.md)
 - [ ] Hosted at permafrost.parbs.online: joins the `scrap-riot_default` Docker network, gets a Cloudflare Tunnel hostname, a locked deploy key (`~/.ssh/permafrost-deploy` → `~/deploy-permafrost.sh`) and an `npm run ship` script
 - [x] Accounts as 16-letter codes, with USE CODE to move to another device
 - [x] The server owns the world. It is stored in SQLite as seed plus changed tiles; clients download the changes on join, then get each tile change as it happens (send chunks near the player if this grows large)

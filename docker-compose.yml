@@ -1,0 +1,30 @@
+# See docs/hosting.md. Reuses Scrap Riot's Cloudflare Tunnel by joining its Docker network.
+services:
+  permafrost:
+    build: .
+    restart: unless-stopped
+    environment:
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-https://permafrost.parbs.online}
+      CLIENT_IP_HEADER: ${CLIENT_IP_HEADER:-cf-connecting-ip}
+    volumes:
+      - permafrost_data:/data
+    # No published ports: only the tunnel can reach it, so the client IP header can be trusted.
+    expose:
+      - "8791"
+    networks:
+      - tunnel
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 384m
+    pids_limit: 64
+
+networks:
+  tunnel:
+    external: true
+    name: ${TUNNEL_NETWORK:-scrap-riot_default}
+
+volumes:
+  permafrost_data:
