@@ -1,11 +1,11 @@
 # Handoff
 
-Last updated 2026-11-09 (hosting files added). Read ROADMAP.md for the plan and the decisions the user has made, and CLAUDE.md for the working rules.
+Last updated 2026-11-09 (v0.2.0 live). Read ROADMAP.md for the plan and the decisions the user has made, and CLAUDE.md for the working rules.
 
 ## Where things stand
 
 - **v0.1 (offline core loop)** is done and committed.
-- **v0.2 (online shared world)** works locally but isn't hosted yet. Its code is in the commit after v0.1:
+- **v0.2 (online shared world)** is live at https://permafrost.parbs.online (v0.2.0, shipped 2026-11-09). Ship updates with `npm run ship` (see docs/hosting.md). The code:
   - `server/` holds the Node server (ws + node:sqlite):
     - `index.ts` serves the HTTP page, `/ws`, `/health`, rate limits and a fixed 60 Hz loop.
     - `game.ts` is the shared world. The server runs `src/sim` for every rig from its inputs, owns tiles, cash and cargo, and broadcasts tile changes, rigs nearby (10 Hz) and snapshots (20 Hz).
@@ -29,12 +29,11 @@ npm run mp       # two headless browsers (URL=http://localhost:PORT/ if not 5173
 npm run shots    # screenshots (desktop, phone)
 ```
 
-## Next steps (rest of v0.2)
+## Next steps
 
-1. **Hosting files are done and tested locally** (2026-11-09): `Dockerfile`, `.dockerignore`, `docker-compose.yml`, `.env.example`, `deploy/deploy-permafrost.sh`, `scripts/ship.mjs` (`npm run ship`) and `docs/hosting.md`. The image was run under Docker Desktop with the compose hardening (read-only, no capabilities, 384 MB): `/health` turned healthy, `npm run mp` passed every check against it, accounts and world changes survived a restart, and `ALLOWED_ORIGINS` refused other origins with a 403.
-2. **Deploying:** the repo went public on 2026-11-09, so the VM clones it over HTTPS. The PC has `~/.ssh/permafrost-deploy` and `.deploy.local.json`. The VM side (clone, `.env`, compose up, `~/deploy-permafrost.sh`, the locked key line) was handed to the `deb-soft-haven` session. The user adds the `permafrost` public hostname (`permafrost:8791`) to Scrap Riot's tunnel in the Cloudflare dashboard. The first ship is `npm run ship -- minor` (0.1.0 → 0.2.0).
-3. **Public map width:** the server uses 240 (`PUBLIC_WIDTH` in `server/game.ts`). The user never confirmed the expected player count, so 240 and 4-week seasons are defaults.
-4. **Visual check:** done. Name tags and chat bubbles read fine at desktop and phone sizes (`shots/mp-03-bo-chat.png`, `mp-04-ada-phone.png`). A chat bubble can cover the layer banner's subtitle for a moment, which is acceptable.
+1. **v0.2 is done.** The repo went public on 2026-11-09. The VM runs `~/permafrost` with `~/deploy-permafrost.sh`, and the PC's `~/.ssh/permafrost-deploy` key plus `.deploy.local.json` (git-ignored) drive `npm run ship`. The first ship passed every check: the page and assets load through Cloudflare, `/ws` opens from the real origin, and other origins are refused.
+2. **Public map width:** the server uses 240 (`PUBLIC_WIDTH` in `server/game.ts`). The user never confirmed the expected player count, so 240 and 4-week seasons are defaults. Season rollover isn't written yet: `worlds.season` stays at 1.
+3. **Next milestone:** v0.3, The living ice (see ROADMAP.md).
 
 ## Known limits and notes
 
