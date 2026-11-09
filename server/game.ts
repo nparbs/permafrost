@@ -2,14 +2,15 @@
 // tiles, cash and cargo, and tells each player what they need to see.
 
 import {
-  PAINT_COUNT, PROTOCOL_VERSION, RIG_THRUST, RIG_WRECKED, RigMode, cleanChat, cleanName, encodeDiffs, unpackInput,
-  type ClientMsg, type PeerInfo, type RigView, type ServerMsg,
+  PAINT_COUNT, PROTOCOL_VERSION, RIG_SOS, RIG_STALLED, RIG_THRUST, RIG_WRECKED, RigMode, cleanChat, cleanName, encodeDiffs, unpackInput,
+  type ClientMsg, type MapDot, type PeerInfo, type RigView, type ServerMsg,
 } from '../src/net/protocol';
 import { applyAction, isAction } from '../src/sim/actions';
 import { Environment } from '../src/sim/env';
-import { newPlayer, type Player } from '../src/sim/player';
+import { newPlayer, type Player, type Rig } from '../src/sim/player';
 import { revivePlayer } from '../src/sim/revive';
-import { STEP, noInput, step, type SimEvent } from '../src/sim/rig';
+import { STEP, noInput, rigDepth, step, type SimEvent } from '../src/sim/rig';
+import { aid } from '../src/sim/station';
 import { World } from '../src/sim/world';
 import type { Store } from './db';
 
@@ -42,6 +43,9 @@ export class Client {
   lastInputAt = 0;
   chatAt = 0;
   meDirty = false;
+  /** Stalled and asking for help. Cleared once the rig has fuel again. */
+  sos = false;
+  sosAt = -Infinity;
 
   constructor(
     readonly sock: Sock,
@@ -111,6 +115,12 @@ export class Game {
         break;
       case 'profile':
         this.profile(c, m.name, m.paint);
+        break;
+      case 'sos':
+        this.sos(c);
+        break;
+      case 'aid':
+        this.aid(c, m.id);
         break;
       default:
         break;
@@ -222,6 +232,31 @@ export class Game {
     this.broadcast({ t: 'peer', p: c.info() });
   }
 
+  private sos(c: Client): void {
+    const r = c.player!.rig;
+    const now = this.now();
+    if (!r.stalled || r.wrecked || c.sos || now - c.sosAt < 5000) return;
+    c.sos = true;
+    c.sosAt = now;
+    this.broadcast({ t: 'sos', id: c.id, name: c.name, depth: Math.max(0, Math.floor(rigDepth(r))) });
+  }
+
+  private aid(c: Client, id: unknown): void {
+    if (typeof id !== 'string') return;
+    const other = this.byAccount.get(id);
+    if (!other?.player || other === c) return;
+    // The page checks the same rules before asking, so a refusal here is a race: say nothing.
+    const r = aid(c.player!, other.player);
+    if (!r.ok) return;
+    other.sos = false;
+    for (const x of [c, other]) {
+      x.send({ t: 'me', player: x.player! });
+      x.meDirty = false;
+      this.savePlayer(x);
+    }
+    this.broadcast({ t: 'rescue', by: c.id, byName: c.name, to: other.id, toName: other.name, fee: r.fee });
+  }
+
   /** Effects other players should see, like blasts. */
   private shareEvent(c: Client, e: SimEvent): void {
     if (e.t === 'blast' || e.t === 'flare') this.broadcast({ t: 'fx', e, by: c.id }, c);
@@ -254,6 +289,7 @@ export class Game {
         this.shareEvent(c, e);
         if (e.t === 'pickup') c.meDirty = true;
       }
+      if (c.sos && !p.rig.stalled) c.sos = false;
     }
 
     const out = this.env.step([...this.clients].map((c) => c.player!), STEP);
@@ -280,6 +316,7 @@ export class Game {
       for (const c of this.clients) c.send({ t: 'snap', ack: c.ack, rig: c.player!.rig, cargo: c.player!.cargo, stats: c.player!.stats });
     }
     if (this.tickNo % 6 === 0) this.sendRigs();
+    if (this.tickNo % 60 === 0) this.sendMap();
     if (this.tickNo % 300 === 0) {
       for (const c of this.clients) {
         if (!c.meDirty) continue;
@@ -290,12 +327,24 @@ export class Game {
     if (now - this.lastSave > SAVE_EVERY_MS) this.save();
   }
 
+  private flags(c: Client): number {
+    const r: Rig = c.player!.rig;
+    return (r.thrusting ? RIG_THRUST : 0) | (r.wrecked ? RIG_WRECKED : 0) | (r.stalled ? RIG_STALLED : 0) | (c.sos ? RIG_SOS : 0);
+  }
+
+  /** Everyone's position for the map, about once a second. Only worth sending when there's someone to find. */
+  private sendMap(): void {
+    if (this.clients.size < 2) return;
+    const p: MapDot[] = [...this.clients].map((c) => [c.id, Math.round(c.player!.rig.x * 10) / 10, Math.round(c.player!.rig.y * 10) / 10, this.flags(c)]);
+    this.broadcast({ t: 'map', p });
+  }
+
   private sendRigs(): void {
     const views: { c: Client; v: RigView }[] = [];
     for (const c of this.clients) {
       const r = c.player!.rig;
       const mode = r.drill ? (r.drill.dir === 'down' ? RigMode.DrillDown : RigMode.DrillSide) : r.grounded && Math.abs(r.vx) > 0.3 ? RigMode.Moving : RigMode.Idle;
-      const flags = (r.thrusting ? RIG_THRUST : 0) | (r.wrecked ? RIG_WRECKED : 0);
+      const flags = this.flags(c);
       views.push({ c, v: [c.id, Math.round(r.x * 100) / 100, Math.round(r.y * 100) / 100, r.facing, mode, flags] });
     }
     for (const c of this.clients) {

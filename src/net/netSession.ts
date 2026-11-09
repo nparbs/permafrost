@@ -3,14 +3,14 @@
 // it, then replay the inputs the server hasn't seen yet. Digs we predicted after input N are
 // put back first, so the replay digs them again at the same moments the server will.
 
-import type { GameSession, Listener, Peer, SessionEvent } from '../game/session';
+import type { GameSession, Listener, MapPeer, Peer, SessionEvent } from '../game/session';
 import { applyAction, type Action, type ActResult } from '../sim/actions';
 import type { Player } from '../sim/player';
 import { revivePlayer } from '../sim/revive';
 import { STEP, noInput, step, type SimEvent } from '../sim/rig';
 import { T } from '../sim/tiles';
 import { World } from '../sim/world';
-import { decodeDiffs, packInput, unpackInput, type ClientMsg, type PeerInfo, type ServerMsg } from './protocol';
+import { decodeDiffs, packInput, unpackInput, type ClientMsg, type MapDot, type PeerInfo, type ServerMsg } from './protocol';
 
 export interface Transport {
   send(m: ClientMsg): void;
@@ -27,7 +27,7 @@ interface PeerState extends Peer {
 }
 
 /** World and other players' events the server forwards that we show as they are. */
-const FX_PASS = new Set<SimEvent['t']>(['loose', 'fall', 'crash', 'thump', 'flood', 'pour', 'flare']);
+const FX_PASS = new Set<SimEvent['t']>(['loose', 'fall', 'crash', 'thump', 'pour', 'flare']);
 
 /** Past this many unanswered ticks (4 s) we stop predicting and wait for the server. */
 const MAX_UNACKED = 240;
@@ -56,6 +56,9 @@ export class NetSession implements GameSession {
   private acts = new Map<number, Action>();
   private offset = { x: 0, y: 0 };
   private closed = false;
+  /** Everyone's last known spot from the server's once-a-second map message. */
+  private dots = new Map<string, MapDot>();
+  private sosFor = false;
   /** Server clock minus ours, in ms. */
   private clockSkew: number;
 
@@ -196,6 +199,7 @@ export class NetSession implements GameSession {
       case 'leave': {
         const p = this.peerMap.get(m.id);
         this.peerMap.delete(m.id);
+        this.dots.delete(m.id);
         if (p) this.emit([{ t: 'peer-leave', name: p.name }]);
         break;
       }
@@ -209,6 +213,18 @@ export class NetSession implements GameSession {
       case 'chat':
         this.emit([{ t: 'chat', id: m.id, name: m.name, text: m.text, mine: m.id === this.me.id }]);
         break;
+      case 'map':
+        this.dots = new Map(m.p.filter((d) => d[0] !== this.me.id).map((d) => [d[0], d]));
+        break;
+      case 'sos':
+        this.emit([{ t: 'peer-sos', id: m.id, name: m.name, depth: m.depth, mine: m.id === this.me.id }]);
+        break;
+      case 'rescue': {
+        const role = m.by === this.me.id ? 'helper' : m.to === this.me.id ? 'helped' : 'none';
+        if (role === 'helped') this.sosFor = false;
+        this.emit([{ t: 'rescue', byName: m.byName, toName: m.toName, fee: m.fee, role }]);
+        break;
+      }
       case 'error':
         this.closed = true;
         this.emit([{ t: 'disconnected', reason: m.msg }]);
@@ -284,6 +300,32 @@ export class NetSession implements GameSession {
 
   onlineCount(): number {
     return this.count;
+  }
+
+  mapPeers(): MapPeer[] {
+    const out: MapPeer[] = [];
+    for (const p of this.peerMap.values()) {
+      const d = this.dots.get(p.id);
+      // Close by, the smoothed position is better; further away, the map message is all we have.
+      if (p.visible) out.push({ id: p.id, name: p.name, paint: p.paint, x: p.x, y: p.y, flags: p.flags });
+      else if (d) out.push({ id: p.id, name: p.name, paint: p.paint, x: d[1], y: d[2], flags: d[3] });
+    }
+    return out;
+  }
+
+  get sosSent(): boolean {
+    if (!this.player.rig.stalled) this.sosFor = false;
+    return this.sosFor;
+  }
+
+  sos(): void {
+    if (this.closed || !this.player.rig.stalled || this.sosFor) return;
+    this.sosFor = true;
+    this.conn.send({ t: 'sos' });
+  }
+
+  aid(id: string): void {
+    if (!this.closed) this.conn.send({ t: 'aid', id });
   }
 
   myId(): string {

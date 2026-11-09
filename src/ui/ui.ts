@@ -3,17 +3,18 @@
 import type { Sfx } from '../game/audio';
 import type { GameSession } from '../game/session';
 import { PAINTS } from '../game/textures';
-import { CHAT_MAX, NAME_MAX, PAINT_COUNT, cleanName } from '../net/protocol';
+import { CHAT_MAX, NAME_MAX, PAINT_COUNT, RIG_STALLED, RIG_WRECKED, cleanName } from '../net/protocol';
 import type { Action, ActResult } from '../sim/actions';
 import { ITEMS, ITEM_ORDER, ITEM_STACK, type ItemKey } from '../sim/items';
 import { cargoCount, cargoValue, statsOf } from '../sim/player';
 import { rigDepth, type Input } from '../sim/rig';
-import { FUEL_PRICE, buildingAt, refuelCost, repairCost, saleLines, towFee } from '../sim/station';
+import { AID_REACH, FUEL_PRICE, buildingAt, refuelCost, repairCost, saleLines, towFee } from '../sim/station';
 import { tempAtDepth } from '../sim/temperature';
 import { ambientTemp, blizzardAt } from '../sim/weather';
 import { LAYERS, MINERALS } from '../sim/tiles';
 import { UPGRADES, UPGRADE_ORDER } from '../sim/upgrades';
 import { METERS_PER_TILE, type Building } from '../sim/world';
+import { Minimap, WorldMap } from './minimap';
 
 declare const __APP_VERSION__: string;
 
@@ -28,7 +29,7 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls = '', html = ''):
   return e;
 }
 
-const esc = (s: string) => s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
+export const esc = (s: string) => s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 
 function button(label: string, onClick: () => void, cls = '', disabled = false): HTMLButtonElement {
   const b = el('button', `btn ${cls}`, label);
@@ -107,7 +108,12 @@ export class UI {
   private chatBtn: HTMLButtonElement;
   private render: (() => HTMLElement) | null = null;
   private closable = true;
-  private nearBuilding: Building | null = null;
+  /** What the big prompt button offers right now ('' for nothing), so it's only redrawn on a change. */
+  private promptKey = '';
+  private minimap: Minimap;
+  private worldMap: WorldMap | null = null;
+  /** Which panel is open, so events can close the right one. */
+  private panelKind = '';
   private textCache = new WeakMap<HTMLElement, string>();
   private highestLayer = 0;
   titleOpen = true;
@@ -143,6 +149,8 @@ export class UI {
     this.chatBtn = btns.appendChild(button('Chat', () => this.openChat(), 'menu-btn chat-btn'));
     this.chatBtn.title = 'Chat (T)';
     btns.appendChild(button('Menu', () => this.openMenu(), 'menu-btn')).title = 'Menu (Esc)';
+    this.minimap = new Minimap(() => this.openMap());
+    read.appendChild(this.minimap.root);
 
     this.banner = r.appendChild(el('div', 'banner'));
     this.toasts = r.appendChild(el('div', 'toasts'));
@@ -263,7 +271,7 @@ export class UI {
         'div',
         'help',
         `<p><kbd>←</kbd><kbd>→</kbd> drive and drill sideways · <kbd>↓</kbd> drill down · <kbd>↑</kbd> or <kbd>Space</kbd> thrust</p>
-         <p><kbd>E</kbd> enter a building · <kbd>1</kbd>–<kbd>6</kbd> items · <kbd>T</kbd> chat · <kbd>M</kbd> mute · <kbd>Esc</kbd> menu</p>`,
+         <p><kbd>E</kbd> enter a building · <kbd>1</kbd>–<kbd>6</kbd> items · <kbd>N</kbd> map · <kbd>T</kbd> chat · <kbd>M</kbd> mute · <kbd>Esc</kbd> menu</p>`,
       ),
     );
     box.appendChild(
@@ -332,12 +340,17 @@ export class UI {
       b.classList.toggle('empty', c === 0);
     }
 
-    const near = this.render ? null : buildingAt(this.s.world, p);
-    if (near !== this.nearBuilding) {
-      this.nearBuilding = near;
-      this.prompt.classList.toggle('show', !!near);
-      if (near) this.prompt.innerHTML = `<kbd>E</kbd><b>Enter</b><span>${near.name}</span>`;
+    const pr = this.render ? null : this.promptNow();
+    const key = pr ? (pr.kind === 'building' ? `b:${pr.b.key}` : pr.kind === 'aid' ? `a:${pr.id}:${pr.name}` : 'stall') : '';
+    if (key !== this.promptKey) {
+      this.promptKey = key;
+      this.prompt.classList.toggle('show', !!pr);
+      if (pr?.kind === 'building') this.prompt.innerHTML = `<kbd>E</kbd><b>Enter</b><span>${pr.b.name}</span>`;
+      else if (pr?.kind === 'stall') this.prompt.innerHTML = `<kbd>E</kbd><b>Stalled</b><span>Options</span>`;
+      else if (pr?.kind === 'aid') this.prompt.innerHTML = `<kbd>E</kbd><b>Refuel</b><span>${esc(pr.name)}</span>`;
     }
+    this.minimap.frame(this.s, this.s.online && !this.titleOpen && this.s.mapPeers().length > 0);
+    if (this.worldMap && this.panelKind === 'map') this.worldMap.draw();
 
     const layer = layerForDepth(d);
     if (layer > this.highestLayer) {
@@ -440,13 +453,61 @@ export class UI {
     return this.render !== null;
   }
 
-  interact(): void {
-    if (this.render || this.titleOpen) return;
-    const b = buildingAt(this.s.world, this.s.player);
-    if (b) this.openBuilding(b);
+  /** What the prompt button should offer right now, if anything. */
+  private promptNow(): Prompt | null {
+    const p = this.s.player;
+    const b = buildingAt(this.s.world, p);
+    if (b) return { kind: 'building', b };
+    const r = p.rig;
+    if (r.stalled && !r.wrecked) return { kind: 'stall' };
+    if (!this.s.online || r.wrecked || r.drill) return null;
+    for (const o of this.s.peers()) {
+      if (!(o.flags & RIG_STALLED) || o.flags & RIG_WRECKED) continue;
+      if (Math.abs(o.x - r.x) <= AID_REACH && Math.abs(o.y - r.y) <= AID_REACH) return { kind: 'aid', id: o.id, name: o.name };
+    }
+    return null;
   }
 
-  openPanel(title: string, render: () => HTMLElement, closable = true): void {
+  interact(): void {
+    if (this.render || this.titleOpen) return;
+    const pr = this.promptNow();
+    if (pr?.kind === 'building') this.openBuilding(pr.b);
+    else if (pr?.kind === 'stall') this.showStalled();
+    else if (pr?.kind === 'aid') this.giveFuel(pr.id, pr.name);
+  }
+
+  private giveFuel(id: string, name: string): void {
+    if ((this.s.player.items.fuelcell ?? 0) <= 0) {
+      this.toast(`You need a Fuel Cell to refuel ${esc(name)}. The Supply Store sells them.`, 'warn', 3000);
+      this.sfx.error();
+      return;
+    }
+    this.s.aid(id);
+  }
+
+  openMap(): void {
+    if (this.titleOpen) return;
+    this.sfx.click();
+    const map = new WorldMap(this.s);
+    this.openPanel('Map', () => map.box, true, 'map');
+    this.worldMap = map;
+    // Start with your own rig in view.
+    const body = this.panelBody;
+    const cv = map.canvas;
+    requestAnimationFrame(() => {
+      const y = cv.offsetTop + cv.offsetHeight * map.meShare() - body.clientHeight / 2;
+      body.scrollTop = Math.max(0, y);
+    });
+  }
+
+  /** Close the panel if it's this kind. */
+  closeIf(kind: string): void {
+    if (this.panelKind === kind) this.closePanel();
+  }
+
+  openPanel(title: string, render: () => HTMLElement, closable = true, kind = ''): void {
+    this.worldMap = null;
+    this.panelKind = kind;
     this.render = render;
     this.closable = closable;
     this.panelTitle.textContent = title;
@@ -456,17 +517,24 @@ export class UI {
     this.s.releaseInput();
     this.s.paused = true;
     this.prompt.classList.remove('show');
-    this.nearBuilding = null;
+    this.promptKey = '';
+    this.panelBody.scrollTop = 0;
     this.rerender();
   }
 
   rerender(): void {
-    if (this.render) this.panelBody.replaceChildren(this.render());
+    if (!this.render) return;
+    // Keep the scroll position, so buying something at the bottom of the shop doesn't jump to the top.
+    const top = this.panelBody.scrollTop;
+    this.panelBody.replaceChildren(this.render());
+    this.panelBody.scrollTop = top;
   }
 
   closePanel(save = true): void {
     if (!this.render) return;
     this.render = null;
+    this.panelKind = '';
+    this.worldMap = null;
     this.panel.classList.add('hidden');
     if (this.s && !this.titleOpen) this.s.paused = false;
     if (save) this.hooks.save();
@@ -483,7 +551,7 @@ export class UI {
     }
     if (this.chatOpen) return true;
     if (this.render) {
-      if (e.code === 'Escape' || (e.code === 'KeyE' && this.closable)) {
+      if (e.code === 'Escape' || (e.code === 'KeyE' && this.closable) || (e.code === 'KeyN' && this.panelKind === 'map')) {
         if (this.closable) this.closePanel();
         e.preventDefault();
       }
@@ -491,6 +559,10 @@ export class UI {
     }
     if (e.code === 'Escape') {
       this.openMenu();
+      return true;
+    }
+    if (e.code === 'KeyN') {
+      this.openMap();
       return true;
     }
     if ((e.code === 'KeyT' || e.code === 'Slash') && this.s.online) {
@@ -596,6 +668,7 @@ export class UI {
       const card = grid.appendChild(el('div', 'up'));
       const pips = line.tiers.map((_, i) => `<i class="${i <= tier ? 'on' : ''}"></i>`).join('');
       card.appendChild(el('div', 'up-h', `<b>${line.name}</b><span class="pips">${pips}</span>`));
+      card.appendChild(el('p', 'up-blurb', line.blurb));
       card.appendChild(el('div', 'up-cur', `${cur.name} · ${line.format(cur.value)}`));
       if (next) {
         card.appendChild(el('div', 'up-next', `Next: ${next.name} · <b>${line.format(next.value)}</b>`));
@@ -651,10 +724,27 @@ export class UI {
           this.s.act({ a: 'use', k: 'fuelcell' });
         }, 'primary wide'));
       }
+      if ((p.items.beacon ?? 0) > 0) {
+        box.appendChild(button(`Use a Recall Beacon and keep your ore (${p.items.beacon} left)`, () => {
+          this.closePanel();
+          this.s.act({ a: 'use', k: 'beacon' });
+        }, 'wide'));
+      }
+      const others = this.s.online ? this.s.mapPeers().length : 0;
+      const fee = money(towFee(p));
+      if (this.s.online && this.s.sosSent) {
+        box.appendChild(el('p', 'note', `SOS sent. Anyone with a Fuel Cell can park next to you and refuel you. You keep your ore and pay them ${fee}, what a tow would cost.`));
+        box.appendChild(button('Keep waiting', () => this.closePanel(), 'wide'));
+      } else if (others > 0) {
+        box.appendChild(button(`Send an SOS and wait (${others} out on the ice)`, () => {
+          this.s.sos();
+          this.closePanel();
+        }, 'wide'));
+        box.appendChild(el('p', 'note', `A miner with a Fuel Cell can refuel you where you are. You keep your ore and pay them ${fee}.`));
+      }
       box.appendChild(this.towButton('Call a tow'));
-      box.appendChild(el('p', 'note', 'Soon other miners will be able to answer an SOS and bring you fuel.'));
       return box;
-    }, false);
+    }, false, 'stall');
   }
 
   showWrecked(): void {
@@ -663,7 +753,7 @@ export class UI {
       box.appendChild(el('p', '', 'The hull gave out. A salvage crew can haul what is left back to the station.'));
       box.appendChild(this.towButton('Call salvage'));
       return box;
-    }, false);
+    }, false, 'wreck');
   }
 
   private towButton(label: string): HTMLElement {
@@ -692,6 +782,7 @@ export class UI {
       const p = this.s.player;
       const box = el('div', 'pnl');
       box.appendChild(button('Resume', () => this.closePanel(), 'primary wide'));
+      box.appendChild(button('Map', () => this.openMap(), 'wide'));
       box.appendChild(button(this.sfx.muted ? 'Sound: off' : 'Sound: on', () => {
         this.sfx.setMuted(!this.sfx.muted);
         this.rerender();
@@ -716,13 +807,15 @@ export class UI {
         }, 'wide danger'));
       }
       box.appendChild(
-        el('p', 'note', `Deepest: <b>${meters(p.stats.deepest)}</b> · Earned: <b>${money(p.stats.earned)}</b> · Trips sold: <b>${p.stats.trips}</b> · Tiles dug: <b>${p.stats.dug}</b>`),
+        el('p', 'note', `Deepest: <b>${meters(p.stats.deepest)}</b> · Earned: <b>${money(p.stats.earned)}</b> · Trips sold: <b>${p.stats.trips}</b> · Tiles dug: <b>${p.stats.dug}</b>${p.stats.rescues ? ` · Rescues: <b>${p.stats.rescues}</b>` : ''}`),
       );
       box.appendChild(el('p', 'note dim', `Permafrost v${__APP_VERSION__}. ${this.s.online ? 'Saved on the server.' : 'Saved in this browser.'}`));
       return box;
     });
   }
 }
+
+type Prompt = { kind: 'building'; b: Building } | { kind: 'stall' } | { kind: 'aid'; id: string; name: string };
 
 export function layerForDepth(d: number): number {
   let i = 0;

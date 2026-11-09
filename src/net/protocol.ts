@@ -5,7 +5,7 @@ import type { Player, PlayerStats, Rig } from '../sim/player';
 import type { Input, SimEvent } from '../sim/rig';
 
 /** Bump when old pages can't talk to a new server. They're told to refresh. */
-export const PROTOCOL_VERSION = 2;
+export const PROTOCOL_VERSION = 3;
 
 export const packInput = (i: Input): number => (i.left ? 1 : 0) | (i.right ? 2 : 0) | (i.up ? 4 : 0) | (i.down ? 8 : 0);
 export const unpackInput = (b: number): Input => ({ left: (b & 1) > 0, right: (b & 2) > 0, up: (b & 4) > 0, down: (b & 8) > 0 });
@@ -23,9 +23,16 @@ export interface PeerInfo {
 export const RigMode = { Idle: 0, Moving: 1, DrillSide: 2, DrillDown: 3 } as const;
 export const RIG_THRUST = 1;
 export const RIG_WRECKED = 2;
+/** Out of fuel underground. */
+export const RIG_STALLED = 4;
+/** Stalled and asking for help. */
+export const RIG_SOS = 8;
 
 /** Another rig, as nearby players see it: [id, x, y, facing, mode, flags]. */
 export type RigView = [string, number, number, number, number, number];
+
+/** Every miner in the world, for the map, about once a second: [id, x, y, flags]. */
+export type MapDot = [string, number, number, number];
 
 export interface WorldInfo {
   id: string;
@@ -42,7 +49,11 @@ export type ClientMsg =
   | { t: 'in'; s: number; i: number[] }
   | { t: 'act'; id: number; act: Action }
   | { t: 'chat'; text: string }
-  | { t: 'profile'; name: string; paint: number };
+  | { t: 'profile'; name: string; paint: number }
+  /** Ask everyone for fuel. Only works while stalled. */
+  | { t: 'sos' }
+  /** Give a Fuel Cell to the stalled miner `id` parked next to you. */
+  | { t: 'aid'; id: string };
 
 export type ServerMsg =
   /** `now` is the server's clock in ms, so weather and steam vents line up. */
@@ -62,6 +73,11 @@ export type ServerMsg =
   /** Events from your own action, like using a charge. */
   | { t: 'ev'; e: SimEvent[] }
   | { t: 'chat'; id: string; name: string; text: string }
+  | { t: 'map'; p: MapDot[] }
+  /** A miner is stalled and asking for help. `depth` is in tiles. */
+  | { t: 'sos'; id: string; name: string; depth: number }
+  /** `by` refuelled `to`, who paid `fee`. Everyone hears about it. */
+  | { t: 'rescue'; by: string; byName: string; to: string; toName: string; fee: number }
   | { t: 'error'; code: 'version' | 'token' | 'replaced' | 'full'; msg: string };
 
 /** Pack [index, tile] pairs into base64: 4 bytes each, little-endian, index << 8 | tile. */

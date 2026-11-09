@@ -51,6 +51,8 @@ export interface PlayerStats {
   earned: number;
   trips: number;
   dug: number;
+  /** Stalled miners you refuelled. */
+  rescues: number;
 }
 
 export interface Player {
@@ -115,7 +117,7 @@ export function newPlayer(world: World, name = 'Miner'): Player {
       x: 0, y: 0, vx: 0, vy: 0, facing: 1, grounded: true, thrusting: false, drill: null,
       fuel: 0, hull: 0, stalled: false, wrecked: false, cold: false, hot: false, scald: false,
     },
-    stats: { deepest: 0, earned: 0, trips: 0, dug: 0 },
+    stats: { deepest: 0, earned: 0, trips: 0, dug: 0, rescues: 0 },
     seen: [],
   };
   const s = statsOf(p);

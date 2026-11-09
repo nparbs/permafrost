@@ -2,8 +2,10 @@ import { describe, expect, it } from 'vitest';
 import { Store } from '../server/db';
 import { Client, Game } from '../server/game';
 import { NetSession, type Transport, type Welcome } from '../src/net/netSession';
-import { PROTOCOL_VERSION, cleanChat, cleanName, decodeDiffs, encodeDiffs, type ClientMsg, type ServerMsg } from '../src/net/protocol';
-import { cargoCount, placeRig } from '../src/sim/player';
+import { PROTOCOL_VERSION, RIG_SOS, RIG_STALLED, cleanChat, cleanName, decodeDiffs, encodeDiffs, type ClientMsg, type ServerMsg } from '../src/net/protocol';
+import { cargoCount, newPlayer, placeRig } from '../src/sim/player';
+import { AID_REACH, aid, towFee } from '../src/sim/station';
+import { World } from '../src/sim/world';
 import { STEP } from '../src/sim/rig';
 import { MINERAL_BASE, T } from '../src/sim/tiles';
 import { SKY } from '../src/sim/world';
@@ -324,5 +326,146 @@ describe('two miners', () => {
     lab.run([sb], 5);
     expect(flares).toEqual([a.client.player!.rig.x]);
     expect(a.client.player!.items.flare).toBe(0);
+  });
+  it('everyone gets a once-a-second map of where the others are, even far out of sight', () => {
+    const lab = new Lab();
+    const a = lab.join({ hello: { name: 'Ada', paint: 3 } });
+    const b = lab.join({ hello: { name: 'Bo' } });
+    const sa = a.session!;
+    const w = lab.game.world;
+    // Bo is parked in a pocket far below and to the side.
+    const x = 70;
+    const y = SKY + 200;
+    for (let xx = x - 1; xx <= x + 1; xx++) w.set(xx, y, T.AIR);
+    w.set(x, y + 1, T.ROCK);
+    placeRig(b.client.player!.rig, x + 0.5, y + 1);
+    lab.run([sa], 70);
+    expect([...sa.peers()]).toEqual([]);
+    const dots = sa.mapPeers();
+    expect(dots.map((d) => d.name)).toEqual(['Bo']);
+    expect(dots[0].x).toBeCloseTo(x + 0.5, 0);
+    expect(dots[0].y).toBeCloseTo(b.client.player!.rig.y, 0);
+    // And Bo sees Ada, with her paint.
+    lab.run([b.session!], 70);
+    expect(b.session!.mapPeers().map((d) => [d.name, d.paint])).toEqual([['Ada', 3]]);
+  });
+
+  it('nobody gets map messages while they are alone', () => {
+    const lab = new Lab();
+    const a = lab.join();
+    lab.run([a.session!], 130);
+    expect(a.received.some((m) => m.t === 'map')).toBe(false);
+  });
+
+  it('a stalled miner sends an SOS, and a miner with a Fuel Cell parked beside them refuels them for the tow fee', () => {
+    const lab = new Lab();
+    const a = lab.join({ lag: 2, hello: { name: 'Ada' } });
+    const b = lab.join({ lag: 2, hello: { name: 'Bo' } });
+    const sa = a.session!;
+    const sb = b.session!;
+    const w = lab.game.world;
+    const x = 20;
+    const y = SKY + 40;
+    for (let yy = y - 1; yy <= y; yy++) for (let xx = x - 1; xx <= x + 4; xx++) w.set(xx, yy, T.AIR);
+    for (let xx = x - 1; xx <= x + 4; xx++) w.set(xx, y + 1, T.ICE);
+    const pa = a.client.player!;
+    const pb = b.client.player!;
+    placeRig(pa.rig, x + 0.5, y + 1);
+    placeRig(pb.rig, x + 2.5, y + 1);
+    pa.rig.fuel = 0;
+    pa.cash = 1000;
+    pb.items.fuelcell = 1;
+    lab.run([sa, sb], 20);
+    expect(pa.rig.stalled).toBe(true);
+    expect(sa.player.rig.stalled).toBe(true);
+
+    const heardA: string[] = [];
+    const heardB: string[] = [];
+    sa.on((e) => {
+      if (e.t === 'peer-sos') heardA.push(`sos:${e.name}:${e.mine}`);
+      if (e.t === 'rescue') heardA.push(`rescue:${e.role}:${e.fee}`);
+    });
+    sb.on((e) => {
+      if (e.t === 'peer-sos') heardB.push(`sos:${e.name}:${e.mine}`);
+      if (e.t === 'rescue') heardB.push(`rescue:${e.role}:${e.fee}`);
+    });
+    sa.sos();
+    sa.sos(); // only once per stall
+    expect(sa.sosSent).toBe(true);
+    lab.run([sa, sb], 15);
+    expect(heardA).toEqual(['sos:Ada:true']);
+    expect(heardB).toEqual(['sos:Ada:false']);
+    const seen = [...sb.peers()].find((p) => p.name === 'Ada')!;
+    expect(seen.flags & RIG_STALLED).toBeTruthy();
+    expect(seen.flags & RIG_SOS).toBeTruthy();
+
+    const fee = towFee(pa);
+    sb.aid(sa.me.id);
+    lab.run([sa, sb], 15);
+    expect(pa.rig.stalled).toBe(false);
+    expect(pa.rig.fuel).toBeGreaterThan(4);
+    expect(pa.cash).toBe(1000 - fee);
+    expect(cargoCount(pa)).toBe(0);
+    expect(pb.cash).toBe(fee);
+    expect(pb.items.fuelcell).toBe(0);
+    expect(pb.stats.rescues).toBe(1);
+    expect(heardA).toContain(`rescue:helped:${fee}`);
+    expect(heardB).toContain(`rescue:helper:${fee}`);
+    expect(sb.player.cash).toBe(fee);
+    expect(sa.sosSent).toBe(false);
+    // Rig flags clear once the miner has fuel again.
+    lab.run([sa, sb], 10);
+    expect([...sb.peers()].find((p) => p.name === 'Ada')!.flags & (RIG_STALLED | RIG_SOS)).toBe(0);
+  });
+
+  it("an SOS from a rig that isn't stalled goes nowhere", () => {
+    const lab = new Lab();
+    const a = lab.join();
+    const b = lab.join();
+    lab.game.handle(a.client, { t: 'sos' });
+    lab.run([b.session!], 5);
+    expect(b.received.some((m) => m.t === 'sos')).toBe(false);
+  });
+});
+
+describe('refuelling another miner', () => {
+  function pair() {
+    const w = new World(5, 80);
+    const helper = newPlayer(w);
+    const target = newPlayer(w);
+    placeRig(target.rig, 20.5, SKY + 30);
+    placeRig(helper.rig, 21.5, SKY + 30);
+    target.rig.fuel = 0;
+    target.rig.stalled = true;
+    target.cash = 400;
+    helper.items.fuelcell = 2;
+    return { helper, target };
+  }
+
+  it('works next to a stalled miner and moves the tow fee across', () => {
+    const { helper, target } = pair();
+    const fee = towFee(target);
+    const r = aid(helper, target);
+    expect(r).toEqual({ ok: true, fee, litres: 5 });
+    expect(helper.items.fuelcell).toBe(1);
+    expect(helper.cash).toBe(fee);
+    expect(target.cash).toBe(400 - fee);
+    expect(target.rig.stalled).toBe(false);
+  });
+
+  it('needs a Fuel Cell, needs to be close, and only helps a stalled rig', () => {
+    let t = pair();
+    t.helper.items.fuelcell = 0;
+    expect(aid(t.helper, t.target)).toEqual({ ok: false, why: 'item' });
+    t = pair();
+    t.helper.rig.x += AID_REACH + 1;
+    expect(aid(t.helper, t.target)).toEqual({ ok: false, why: 'far' });
+    t = pair();
+    t.target.rig.stalled = false;
+    expect(aid(t.helper, t.target)).toEqual({ ok: false, why: 'state' });
+    t = pair();
+    t.target.rig.wrecked = true;
+    expect(aid(t.helper, t.target)).toEqual({ ok: false, why: 'state' });
+    expect(aid(t.helper, t.helper)).toEqual({ ok: false, why: 'state' });
   });
 });

@@ -50,6 +50,8 @@ function mineralChance(m: Mineral, d: number, layer: number): number {
 }
 
 const BOULDER_CHANCE = [0, 0, 0.004, 0.008, 0.015, 0.012, 0.008];
+/** Chance per glacier tile of a meltwater pocket. */
+const MELT_CHANCE = 0.011;
 
 export class World {
   readonly seed: number;
@@ -121,9 +123,9 @@ export class World {
     if (d > 40 && hash3(x, y, seed + 404) < BOULDER_CHANCE[layer]) return T.BOULDER;
     if (d > 140 && hash3(x, y, seed + 505) < 0.006) return T.GAS;
     if (layer === L.ICE) {
-      // Slabs hang over the ice caverns; meltwater sits in pockets through the glacier.
+      // Slabs hang over the ice caverns; meltwater pockets (fuel) sit through the glacier.
       if (d > 12 && this.iceCave(x, d + 1) && hash3(x, y, seed + 808) < 0.45) return T.SLAB;
-      if (d > 36 && hash3(x, y, seed + 909) < 0.008) return T.MELT;
+      if (d > 32 && hash3(x, y, seed + 909) < MELT_CHANCE) return T.MELT;
     }
     if (layer === L.BASALT && hash3(x, y, seed + 1010) < 0.007) return T.VENT;
 

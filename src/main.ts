@@ -14,7 +14,8 @@ import { statsOf } from './sim/player';
 import { rigDepth, type Input } from './sim/rig';
 import { MINERALS, T, tileDef } from './sim/tiles';
 import { blizzardAt, ventActive } from './sim/weather';
-import { UI, layerForDepth, money, whyText, type TitleInfo } from './ui/ui';
+import { UI, esc, layerForDepth, money, whyText, type TitleInfo } from './ui/ui';
+import { METERS_PER_TILE } from './sim/world';
 
 const sfx = new Sfx();
 const paintPref = () => {
@@ -249,11 +250,10 @@ function onEvent(e: SessionEvent): void {
     case 'thump':
       if (near(e.x, e.y, 12)) sfx.thud(e.t === 'crash' ? 0.6 : 0.3);
       break;
-    case 'flood':
-      if (near(e.x, e.y, 12)) {
-        sfx.splash();
-        hint('flood', 'Meltwater! It freezes into rime in a few seconds. Thrust up into rime to break through.');
-      }
+    case 'refill':
+      sfx.splash();
+      ui.toast(`Meltwater cracked into fuel: <b>+${e.litres.toFixed(1)} L</b>`, 'good', 1800);
+      hint('refill', 'Meltwater pockets are free fuel. Look for the blue glints in the glacier.');
       break;
     case 'pour':
       if (near(e.x, e.y, 10)) {
@@ -279,7 +279,28 @@ function onEvent(e: SessionEvent): void {
       break;
     case 'refused':
       sfx.error();
-      ui.toast(`The station says no: ${whyText(e.res)}`, 'warn');
+      if (e.act.a === 'use') ui.toast(`Can't use a ${ITEMS[e.act.k].name} right now.`, 'warn');
+      else ui.toast(`The station says no: ${whyText(e.res)}`, 'warn');
+      break;
+    case 'peer-sos':
+      if (e.mine) {
+        ui.toast('SOS sent. Hang tight: anyone with a Fuel Cell can refuel you.', 'warn', 3200);
+      } else {
+        sfx.alarm();
+        ui.toast(`${esc(e.name)} is out of fuel at ${e.depth * METERS_PER_TILE} m. Bring a Fuel Cell and earn their tow fee (map: N).`, 'bad', 5000);
+      }
+      break;
+    case 'rescue':
+      if (e.role === 'helper') {
+        sfx.sell();
+        ui.toast(`You refuelled ${esc(e.toName)}. They paid you <b>${money(e.fee)}</b>.`, 'good', 3600);
+      } else if (e.role === 'helped') {
+        sfx.buy();
+        ui.closeIf('stall');
+        ui.toast(`${esc(e.byName)} refuelled you for ${money(e.fee)}. Your ore is still on board.`, 'good', 3600);
+      } else {
+        ui.toast(`${esc(e.byName)} refuelled ${esc(e.toName)}.`, '', 2200);
+      }
       break;
     case 'chat':
       ui.addChat(e.name, e.text, e.mine);

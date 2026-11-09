@@ -2,7 +2,7 @@
 
 import Phaser from 'phaser';
 import { RIG_H, statsOf } from '../sim/player';
-import { RIG_THRUST, RIG_WRECKED, RigMode } from '../net/protocol';
+import { RIG_SOS, RIG_STALLED, RIG_THRUST, RIG_WRECKED, RigMode } from '../net/protocol';
 import { FLARE } from '../sim/items';
 import { rigDepth } from '../sim/rig';
 import { MINERALS, T, isDiggable, isSolid } from '../sim/tiles';
@@ -391,6 +391,8 @@ export class GameScene extends Phaser.Scene {
       for (let x = x0; x <= x1; x++) {
         const tile = w.tiles[y * w.w + x];
         if (tile === T.MAGMA) light((x + 0.5) * TS, (y + 0.5) * TS, 2.1 * TS, 0.5);
+        // Meltwater pockets catch a little light, so you can spot fuel in the dark glacier.
+        else if (tile === T.MELT) light((x + 0.5) * TS, (y + 0.5) * TS, 1.15 * TS, 0.4);
         else if (tile === T.VENT) light((x + 0.5) * TS, y * TS, (ventActive(w, x, y) ? 2.6 : 1.4) * TS, 0.5);
       }
     }
@@ -545,7 +547,11 @@ export class GameScene extends Phaser.Scene {
         s.rig.setTexture(`rig${p.paint}`);
         s.paint = p.paint;
       }
-      if (s.tag.text !== p.name) s.tag.setText(p.name);
+      const stuck = (p.flags & RIG_STALLED) > 0 && !(p.flags & RIG_WRECKED);
+      const label = stuck ? `${p.name} · ${p.flags & RIG_SOS ? 'SOS' : 'out of fuel'}` : p.name;
+      if (s.tag.text !== label) s.tag.setText(label).setColor(stuck ? '#ff8a7a' : '#cfe6ff');
+      if (stuck) s.tag.setAlpha(Math.floor(this.time.now / 450) % 2 ? 1 : 0.55);
+      else s.tag.setAlpha(0.85);
       const px = p.x * TS;
       const py = p.y * TS;
       let frame = 'idle0';
@@ -682,9 +688,10 @@ export class GameScene extends Phaser.Scene {
         this.dust.emitParticleAt((e.x + 0.5) * TS, (e.y + 1) * TS, 8);
         this.shakeNear(e.x, e.y, 120, 0.004);
         break;
-      case 'flood':
-        this.dust.setParticleTint(0x5aaaf0);
-        this.dust.emitParticleAt((e.x + 0.5) * TS, (e.y + 0.5) * TS, 20);
+      case 'refill':
+        this.sparks.setParticleTint(0x7ac8ff);
+        this.sparks.emitParticleAt(r.x * TS, r.y * TS - 2, 16);
+        this.floatText(r.x * TS, r.y * TS - 8, `+${e.litres.toFixed(1)} L`, '#9fe8ff');
         break;
       case 'pour':
         this.sparks.setParticleTint(0xff8a20);

@@ -19,7 +19,11 @@ body {
   overflow: hidden;
   background: #04060f;
   color: var(--text);
-  touch-action: none;
+  /* pan-y, not none: some phone browsers (iOS Safari) carry a page-wide 'none' into every scroll
+     box, which froze the shop list. pan-y still blocks pinch and double-tap zoom, and the body
+     can't scroll anyway. The game canvas and the touch buttons block every gesture themselves. */
+  touch-action: pan-y;
+  overscroll-behavior: none;
   user-select: none;
   -webkit-user-select: none;
   -webkit-tap-highlight-color: transparent;
@@ -28,6 +32,7 @@ body {
 #game {
   position: fixed;
   inset: 0;
+  touch-action: none;
 }
 #game canvas {
   display: block;
@@ -480,18 +485,25 @@ kbd {
 
 /* ---------------------------------------------------------------- panels */
 
+/* Flex, not grid: a grid row grows to fit the card, so a tall shop ran off the screen and
+   couldn't scroll. In a flex box the card's max-height is the screen's, and its body scrolls. */
 .panel {
+  touch-action: pan-y;
   position: absolute;
   inset: 0;
-  display: grid;
-  place-items: center;
-  padding: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  padding: max(6px, env(safe-area-inset-top)) max(6px, env(safe-area-inset-right)) max(6px, env(safe-area-inset-bottom)) max(6px, env(safe-area-inset-left));
   background: rgba(0, 0, 0, 0.45);
   pointer-events: auto;
 }
 .card {
   width: min(560px, 100%);
-  max-height: calc(100% - 10px);
+  max-height: 100%;
+  min-height: 0;
+  box-sizing: border-box;
   display: flex;
   flex-direction: column;
   background: var(--panel);
@@ -522,9 +534,27 @@ kbd {
   border-radius: 3px;
   cursor: pointer;
 }
+.card header {
+  flex: none;
+}
 .card .body {
-  overflow: auto;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  /* The page blocks touch scrolling everywhere else (so the game controls work); allow it here. */
+  touch-action: pan-y;
   padding: 12px;
+}
+@media (max-height: 420px) {
+  .card header {
+    padding: 5px 10px;
+  }
+  .card .body {
+    padding: 8px 10px;
+  }
 }
 .pnl {
   display: grid;
@@ -688,6 +718,12 @@ details.prices {
 .up-next b {
   color: var(--good);
   font-weight: 400;
+}
+.up-blurb {
+  margin: 0;
+  font-size: 9px;
+  line-height: 1.4;
+  color: var(--dim);
 }
 
 /* ---------------------------------------------------------------- title */
@@ -926,4 +962,76 @@ details.prices {
   .chat-log {
     display: none;
   }
+}
+
+/* ---------------------------------------------------------------- map */
+
+.minimap {
+  margin-top: 4px;
+  padding: 0;
+  width: 128px;
+  height: 88px;
+  background: #05080e;
+  border: 1px solid var(--line);
+  outline: 1px solid #000;
+  border-radius: 3px;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+.minimap canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  image-rendering: pixelated;
+}
+@media (max-height: 420px), (max-width: 420px) {
+  .minimap {
+    width: 96px;
+    height: 66px;
+  }
+}
+.world-map {
+  gap: 8px;
+}
+.map-list {
+  display: grid;
+  gap: 4px;
+}
+.map-row {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 2px 10px;
+  padding: 4px 6px;
+  font-size: 11px;
+  background: #0d1a2c;
+  border: 1px solid #1e3550;
+  border-radius: 3px;
+}
+.map-row b {
+  font-weight: 400;
+  color: var(--ice);
+}
+.map-row span {
+  color: var(--dim);
+}
+.map-row em {
+  margin-left: 6px;
+  font-style: normal;
+  color: var(--bad);
+}
+.map-row.sos {
+  border-color: #8a2a2a;
+  animation: sos 1s steps(2) infinite;
+}
+@keyframes sos {
+  50% {
+    border-color: #ff5050;
+  }
+}
+.map-cv {
+  display: block;
+  width: 100%;
+  image-rendering: pixelated;
+  border: 1px solid var(--line);
 }

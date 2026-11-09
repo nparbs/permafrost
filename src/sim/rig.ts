@@ -29,6 +29,9 @@ export const PHYS = {
 /** Fuel burn in litres per second. */
 export const BURN = { idle: 0.03, move: 0.08, thrust: 0.22, drill: 0.18 };
 
+/** Share of the tank a meltwater pocket refills, and the least it gives. */
+export const MELT_FUEL = { share: 0.4, min: 4 };
+
 export const HAZARD = {
   /** Extra fuel burn per °C below the heater's range. */
   coldBurn: 0.03,
@@ -56,6 +59,8 @@ export type SimEvent =
   | { t: 'dig-start'; x: number; y: number; tile: number }
   | { t: 'dug'; x: number; y: number; tile: number }
   | { t: 'pickup'; mineral: number }
+  /** Drilled a meltwater pocket and cracked it into this many litres of fuel. */
+  | { t: 'refill'; litres: number }
   | { t: 'cargo-full'; mineral: number }
   | { t: 'hurt'; amount: number; cause: HurtCause }
   | { t: 'land'; speed: number }
@@ -68,8 +73,6 @@ export type SimEvent =
   | { t: 'crash'; x: number; y: number; tile: number }
   /** A falling tile landed hard. */
   | { t: 'thump'; x: number; y: number }
-  /** Meltwater burst out at (x, y). */
-  | { t: 'flood'; x: number; y: number }
   /** Magma started to pour into a tunnel. */
   | { t: 'pour'; x: number; y: number }
   | { t: 'flare'; x: number; y: number }
@@ -228,6 +231,14 @@ function finishDrill(p: Player, world: World, ev: SimEvent[]): void {
       ev.push({ t: 'pickup', mineral: m });
     } else {
       ev.push({ t: 'cargo-full', mineral: m });
+    }
+  }
+  if (tile === T.MELT) {
+    const tank = statsOf(p).tank;
+    const got = Math.min(tank - r.fuel, Math.max(MELT_FUEL.min, tank * MELT_FUEL.share));
+    if (got > 0) {
+      r.fuel += got;
+      ev.push({ t: 'refill', litres: got });
     }
   }
   if (tile === T.GAS) {

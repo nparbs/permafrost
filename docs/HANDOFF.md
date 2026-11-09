@@ -1,9 +1,16 @@
 # Handoff
 
-Last updated 2026-11-09 (v0.3.0 live: rounded tunnels, the living ice and the phone UI). Read ROADMAP.md for the plan and the decisions the user has made, and CLAUDE.md for the working rules.
+Last updated 2026-11-09 (v0.3.0 live; v0.3.1 built and tested locally, not committed or shipped: phone panel scrolling, minimap and map, meltwater as fuel, SOS rescues). Read ROADMAP.md for the plan and the decisions the user has made, and CLAUDE.md for the working rules.
 
 ## Where things stand
 
+- **v0.3.1 (not committed, not shipped)** is in the working tree. See the v0.3.1 section of ROADMAP.md for the list. The details:
+  - Phone panels: `.panel` is now a flex box (it was a grid, whose auto row can grow past the screen in some engines), the card is `max-height: 100%`, and `.card .body` scrolls with `touch-action: pan-y`. The page itself is `touch-action: pan-y` instead of `none` (some phone browsers carry a page-wide `none` into every scroll box); `#game` and `.tbtn` still block every gesture. `rerender()` keeps the body's scroll position. Headless Chrome scrolled even with the old CSS, so the real-phone cause couldn't be reproduced here; both likely causes are fixed. `npm run uicheck` swipes the shop with real touch events (CDP `synthesizeScrollGesture` does nothing headless).
+  - Map: `src/ui/minimap.ts` has `Minimap` (HUD, 64x44 tiles around you, arrows for miners outside it, shown only online with someone else on) and `WorldMap` (the Map panel: a list plus the world from the sky down to below the deepest miner). The server broadcasts `{ t: 'map', p: [id, x, y, flags][] }` every 60 ticks when 2+ are online, and `NetSession.mapPeers()` mixes it with the smoothed nearby rigs. Ore is never drawn on either.
+  - Meltwater: `T.MELT` is fuel (`MELT_FUEL` in `rig.ts`: 40% of the tank, at least 4 L, emits a `refill` event). `MELT_CHANCE` is 0.011 from 32 tiles down (was 0.008 from 36), a superset of the old pockets. The flood code is gone. `T.WATER` is never made now; any left in the live world's diffs freezes into rime after a restart, as before.
+  - SOS: client messages `sos` and `aid`; server messages `sos` and `rescue`; rig flags `RIG_STALLED` and `RIG_SOS`. `aid()` in `station.ts` is the rule (helper needs a Fuel Cell and to be within `AID_REACH` = 2.5 tiles; the stalled miner gets half a tank and pays the helper `towFee`). `PlayerStats.rescues` is new. The client checks the rules before sending, and the server ignores a refused `aid` (only a race can cause one).
+  - `PROTOCOL_VERSION` is 3 and the package version 0.3.1.
+  - Checked: 62 tests pass, typecheck, `npm run uicheck` (phone shop at 640x360 and 360x640, stall panel, minimap and map with two miners) and `npm run mp` all pass against a local build.
 - **v0.1 (offline core loop)** is done and committed.
 - **v0.2 (online shared world)** is live at https://permafrost.parbs.online (v0.2.0, shipped 2026-11-09). Ship updates with `npm run ship` (see docs/hosting.md). The code:
   - `server/` holds the Node server (ws + node:sqlite):
@@ -42,10 +49,14 @@ npm run server   # builds dist-server/ and runs on :8791 (DB in data/permafrost.
 npm run dev      # page on :5173, which forwards /ws to :8791
 npm run mp       # two headless browsers (URL=http://localhost:PORT/ if not 5173)
 npm run shots    # screenshots (desktop, phone)
+npm run uicheck  # phone panel scrolling, stall panel, minimap and map (URL=... like mp)
 ```
+
+If port 8791 is already taken by an old local server, build with `npx vite build` and run `PORT=8795 DB_FILE=... node dist-server/index.mjs`, which serves the page too, then point `URL=http://localhost:8795/` at it.
 
 ## Next steps
 
+0. **v0.3.1 is waiting on the user** to commit and ship (`npm run ship`). Shipping drops connections for a few seconds and the protocol bump makes open pages refresh. After it's live, watch whether the shop now scrolls on the user's phone: it couldn't be reproduced in headless Chrome.
 1. **v0.3 is shipped.** The public world kept its seed and diffs, so tunnels dug before v0.3 start their refreeze clocks from the deploy. Nobody has played v0.3 online with real players yet, so watch for feedback on the tuning items in step 5.
 2. **v0.2 is done.** The repo went public on 2026-11-09. The VM runs `~/permafrost` with `~/deploy-permafrost.sh`, and the PC's `~/.ssh/permafrost-deploy` key plus `.deploy.local.json` (git-ignored) drive `npm run ship`. The first ship passed every check: the page and assets load through Cloudflare, `/ws` opens from the real origin, and other origins are refused. Nightly backups: `~/backup-permafrost.sh` runs from cron at 04:30 into `~/permafrost-backups` and keeps 14 days, set up by `deb-soft-haven` and the same as TPT's.
 3. **Public map width:** the server uses 240 (`PUBLIC_WIDTH` in `server/game.ts`). The user never confirmed the expected player count, so 240 and 4-week seasons are defaults. Season rollover isn't written yet: `worlds.season` stays at 1. It's planned under the Seasons item in ROADMAP.md, and should land before 4 weeks pass on the live world (from 2026-11-09).

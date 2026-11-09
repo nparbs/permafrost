@@ -111,6 +111,34 @@ export function towFee(p: Player): number {
   return Math.min(p.cash, Math.round(TOW_FLAT + p.cash * TOW_SHARE));
 }
 
+/** How close (in tiles, each way) a helper must park to hand over fuel. */
+export const AID_REACH = 2.5;
+
+export type AidResult = { ok: true; fee: number; litres: number } | { ok: false; why: 'item' | 'far' | 'state' };
+
+/**
+ * One miner hands a Fuel Cell to a stalled one parked next to them. The stalled miner keeps
+ * their cargo and spot, and pays the helper what a tow would have cost them.
+ */
+export function aid(helper: Player, target: Player): AidResult {
+  const h = helper.rig;
+  const t = target.rig;
+  if (helper === target || !t.stalled || t.wrecked || h.stalled || h.wrecked || h.drill) return { ok: false, why: 'state' };
+  if ((helper.items.fuelcell ?? 0) <= 0) return { ok: false, why: 'item' };
+  if (Math.abs(h.x - t.x) > AID_REACH || Math.abs(h.y - t.y) > AID_REACH) return { ok: false, why: 'far' };
+  const tank = statsOf(target).tank;
+  const litres = Math.min(tank - t.fuel, tank * 0.5);
+  helper.items.fuelcell--;
+  t.fuel += litres;
+  t.stalled = false;
+  const fee = towFee(target);
+  target.cash -= fee;
+  helper.cash += fee;
+  helper.stats.earned += fee;
+  helper.stats.rescues++;
+  return { ok: true, fee, litres };
+}
+
 /** Haul a stranded or wrecked rig back to the station. Cargo is lost. */
 export function tow(p: Player, world: World): number {
   const fee = towFee(p);

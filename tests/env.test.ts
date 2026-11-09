@@ -171,30 +171,49 @@ describe('refreeze', () => {
 });
 
 describe('meltwater and magma', () => {
-  it('a meltwater pocket floods the tunnel below it, then the water freezes into rime', () => {
+  it('drilling a meltwater pocket tops up the tank and leaves a plain tunnel, with no flood', () => {
     const { w, env, x, y } = setup();
     for (let k = 1; k <= 3; k++) w.set(x, y + k, T.AIR);
-    for (let i = -3; i <= 3; i++) w.set(x + i, y + 3, T.AIR);
-    w.set(x, y, T.MELT);
-    w.set(x, y, T.AIR); // dug
-    const ev = tick(env, [bystander(w)], 0.1);
-    expect(ev.some((e) => e.t === 'flood')).toBe(true);
-    // The lowest row fills first.
-    for (let i = -3; i <= 3; i++) expect(w.get(x + i, y + 3)).toBe(T.WATER);
-    tick(env, [bystander(w)], ENV.freeze + 4);
-    for (let i = -3; i <= 3; i++) expect(w.get(x + i, y + 3)).toBe(T.RIME);
-  });
-
-  it('water never freezes around a rig sitting in it', () => {
-    const { w, env, x, y } = setup();
-    for (let i = -2; i <= 2; i++) w.set(x + i, y, T.AIR);
-    w.set(x, y - 1, T.MELT);
+    w.set(x, y, T.AIR);
+    w.set(x, y + 1, T.MELT);
     const p = newPlayer(w);
     placeRig(p.rig, x + 0.5, y + 1);
-    w.set(x, y - 1, T.AIR);
-    run(w, env, p, {}, ENV.freeze + 5);
+    p.rig.fuel = 2;
+    const ev = run(w, env, p, { down: true }, 1.2);
+    const refill = ev.find((e) => e.t === 'refill');
+    expect(refill).toBeTruthy();
+    expect(p.rig.fuel).toBeGreaterThan(5.5);
+    expect(w.get(x, y + 1)).toBe(T.AIR);
+    for (let k = 2; k <= 3; k++) expect(w.get(x, y + k)).toBe(T.AIR);
+  });
+
+  it('a meltwater pocket never overfills the tank', () => {
+    const { w, env, x, y } = setup();
+    w.set(x, y, T.AIR);
+    w.set(x, y + 1, T.MELT);
+    const p = newPlayer(w);
+    placeRig(p.rig, x + 0.5, y + 1);
+    const ev = run(w, env, p, { down: true }, 1.2);
+    expect(w.get(x, y + 1)).toBe(T.AIR);
+    // Drilling burned a little, and the pocket only tops that back up.
+    const refill = ev.find((e) => e.t === 'refill');
+    expect(refill && refill.t === 'refill' && refill.litres).toBeLessThan(1);
+    expect(p.rig.fuel).toBeLessThanOrEqual(10);
+    expect(p.rig.fuel).toBeGreaterThan(9);
+  });
+
+  it('standing water left in an old save freezes into rime, but never around a rig in it', () => {
+    const w = new World(99, W);
+    const x = 10;
+    const y = SKY + 60;
+    for (let i = -3; i <= 3; i++) w.set(x + i, y, T.WATER);
+    w.set(x, y + 1, T.ICE);
+    const env = new Environment(w);
+    const p = newPlayer(w);
+    placeRig(p.rig, x + 0.5, y + 1);
+    tick(env, [p], ENV.freeze + 5);
     expect(w.get(x, y)).toBe(T.WATER);
-    expect(w.get(x + 2, y)).toBe(T.RIME);
+    expect(w.get(x + 3, y)).toBe(T.RIME);
   });
 
   it('magma pours into a tunnel opened next to it, runs a little way, then cools to slag', () => {

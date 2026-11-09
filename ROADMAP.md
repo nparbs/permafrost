@@ -75,16 +75,28 @@ The finale: plant charges on the Hearth's heat vents while it pulses freezing wa
 - [x] Loose boulders and ice slabs shake, then fall when the space under them or beside them opens up. Slabs hang over the ice caverns. A falling one that lands on a rig hurts it and breaks
 - [x] Headlamp upgrade line (5 tiers) and flares (item 6, seen by other miners too). It gets darker with depth and is pitch black by the bedrock; magma and vents glow
 - [x] Blizzards at the surface on a shared clock (about 3 in 10 seven-minute slots): 25°C colder, a whiteout, wind, and flying burns 60% more fuel
-- [x] Meltwater pockets in the glacier flood the lowest tunnel tiles nearby, slow the rig, and freeze into rime after about 7 seconds (never around a rig)
+- [x] ~~Meltwater pockets in the glacier flood the lowest tunnel tiles nearby, slow the rig, and freeze into rime~~ Replaced in v0.3.1: the flooding had no point, so pockets are now fuel
 - [x] Steam vents in the Geothermal Zone blow every 6 seconds, scalding and lifting anything above them. Magma pours into a tunnel opened beside it, runs up to 3 tiles, and cools into diggable slag after 30 seconds
 - [x] Music: an ambient mood for each layer, all synthesized, with a Music on/off switch in the menu
+
+## v0.3.1: Finding each other (built 2026-11-09, not shipped yet)
+
+- [x] Phone fix: station panels (the Machine Shop most of all) scroll with a finger, so every upgrade can be reached. The panel is a flex box sized to the screen, the page no longer blocks touch scrolling everywhere (only the game canvas and touch buttons do), and buying something keeps your place in the list
+- [x] Upgrade cards show what each line does (it was only a hover tooltip, which phones never show)
+- [x] Minimap in the HUD while other miners are online: a window around your rig, with arrows at the edge pointing to miners outside it. Tap it, or press N, for the full map: everyone listed with depth and direction ("140 m down, 90 m left"), over the whole dug-out world. Ore isn't drawn, so it's no ore scanner. The server sends everyone's position once a second (`map`)
+- [x] Meltwater pockets are fuel: drilling one tops up 40% of your tank (at least 4 L), they're a bit more common (from 160 m down), and they glint in the dark so you can find them. No more floods
+- [x] SOS (from v0.4, the fuel half): a stalled miner can send an SOS from the Out of fuel panel. Everyone hears it, the miner blinks red on the map and gets an SOS tag. Anyone with a Fuel Cell who parks within 2.5 tiles gets a Refuel prompt: the stalled miner gets half a tank and keeps their ore, and pays the helper what a tow would have cost. Rescues count in your stats
+- [x] The Out of fuel panel also offers a Recall Beacon if you carry one, since it keeps your ore and a tow doesn't
+- [x] Fixes: an item the server refuses now says "Can't use a Flare right now" instead of "The station says no"
+- [x] `PROTOCOL_VERSION` is 3 (generation changed), so open pages are told to refresh when this ships
 
 ## v0.4: Friendly rivalry
 
 - [ ] Live ore market: each sale pushes that ore's price down server-wide, and it recovers over time. The Assay Office shows the trend
 - [ ] Daily bounties: the Combine pays extra for one ore today
 - [ ] Server-wide announcements for big finds such as relics and Heartshards, plus a "first to find it" board for the season
-- [ ] SOS: a stalled miner sends a beacon, and anyone who brings fuel or tows them earns a share of the fee
+- [x] SOS: a stalled miner sends a beacon, and anyone who brings fuel earns the tow fee (done early, in v0.3.1)
+- [ ] Towing a stalled or wrecked miner with a cable, for the same fee (see the tow cable idea below)
 - [ ] Trading ore between players at the station
 - [ ] Leaderboards for the season: deepest, most earned, relics found, rescues and fastest Hearth
 - [ ] Seasons (4 weeks by default): the map regenerates, and rigs, cash and upgrades reset. Cosmetics, titles, prestige stars and history stay. There's a season summary screen

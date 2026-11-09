@@ -18,6 +18,10 @@ export type SessionEvent =
   | { t: 'peer-join'; name: string }
   | { t: 'peer-leave'; name: string }
   | { t: 'refused'; act: Action; res: ActResult }
+  /** A miner (maybe you) is stalled and asking for fuel. `depth` is in tiles. */
+  | { t: 'peer-sos'; id: string; name: string; depth: number; mine: boolean }
+  /** Someone refuelled a stalled miner. `role` says whether that was you. */
+  | { t: 'rescue'; byName: string; toName: string; fee: number; role: 'helper' | 'helped' | 'none' }
   | { t: 'disconnected'; reason: string };
 
 export type Listener = (e: SessionEvent) => void;
@@ -32,6 +36,17 @@ export interface Peer {
   mode: number;
   flags: number;
   visible: boolean;
+}
+
+/** Another miner as the map shows them, wherever they are. */
+export interface MapPeer {
+  id: string;
+  name: string;
+  paint: number;
+  x: number;
+  y: number;
+  /** RIG_* flags from src/net/protocol.ts. */
+  flags: number;
 }
 
 export interface GameSession {
@@ -52,6 +67,14 @@ export interface GameSession {
   onlineCount(): number;
   myId(): string;
   chat(text: string): void;
+  /** Every other miner in the world, for the map. Empty offline. */
+  mapPeers(): MapPeer[];
+  /** Ask everyone for fuel (online, while stalled). */
+  sos(): void;
+  /** True once an SOS went out for the current stall. */
+  readonly sosSent: boolean;
+  /** Hand a Fuel Cell to the stalled miner `id` (online). */
+  aid(id: string): void;
   close(): void;
 }
 
@@ -128,6 +151,14 @@ export class LocalSession implements GameSession {
   }
 
   chat(): void {}
+
+  mapPeers(): MapPeer[] {
+    return [];
+  }
+
+  readonly sosSent = false;
+  sos(): void {}
+  aid(): void {}
 
   close(): void {
     this.env.detach();

@@ -18,10 +18,10 @@ export const T = {
   RIME: 13,
   /** A loose block of glacier ice. Falls if the space under it opens up. */
   SLAB: 14,
-  /** Meltwater trapped in the glacier. Floods the tunnel below when dug. */
+  /** Meltwater trapped in the glacier. Drilling it tops up the tank: the rig cracks water into fuel. */
   MELT: 15,
   // Minerals take 16 to 47.
-  /** Standing meltwater. Slows the rig, then freezes into rime. */
+  /** Standing meltwater. No longer made (pockets used to flood tunnels before v0.3.1); any left in a saved world slows the rig, then freezes into rime. */
   WATER: 48,
   /** A steam vent: blows scalding steam straight up every few seconds. */
   VENT: 49,

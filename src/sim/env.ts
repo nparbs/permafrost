@@ -1,6 +1,6 @@
 // The living ice: everything the world does on its own. Loose boulders and slabs fall,
-// tunnels near the surface refreeze, meltwater floods and freezes, and magma pours into
-// fresh tunnels and cools. Offline the LocalSession runs this; online only the server does,
+// tunnels near the surface refreeze, and magma pours into fresh tunnels and cools. (Standing
+// water left in a saved world from before v0.3.1 still freezes into rime.) Offline the LocalSession runs this; online only the server does,
 // and clients see the results as tile changes and fx events.
 
 import { RIG_H, RIG_W, type Player } from './player';
@@ -20,11 +20,9 @@ export const ENV = {
   refreeze: [8 * 60, 12 * 60, 18 * 60],
   /** Chance a refrozen tile grows ore instead of rime, if it has solid ground under it. */
   regrow: 0.08,
-  /** Keep refreeze, floods and magma this far (in tiles) from any rig. */
+  /** Keep refreeze and magma this far (in tiles) from any rig. */
   clearance: 2.5,
-  /** Tiles of meltwater in one pocket. */
-  flood: 9,
-  /** Seconds before standing meltwater freezes into rime. */
+  /** Seconds before standing water (only in worlds saved before v0.3.1) freezes into rime. */
   freeze: 7,
   /** Seconds before magma pours into a tunnel opened next to it. */
   pour: 1.4,
@@ -107,7 +105,7 @@ export class Environment {
   private n = 0;
 
   constructor(readonly world: World) {
-    world.onSet = (x, y, was, now) => this.changed(x, y, was, now);
+    world.onSet = (x, y, _was, now) => this.changed(x, y, now);
     // Tunnels dug before now (a loaded save, a server restart) start their refreeze clocks afresh.
     for (const [i, t] of world.diffs) {
       const x = i % world.w;
@@ -144,12 +142,11 @@ export class Environment {
 
   // ---------------------------------------------------------------- reacting to changes
 
-  private changed(x: number, y: number, was: number, now: number): void {
+  private changed(x: number, y: number, now: number): void {
     const w = this.world;
     if (isSolid(now)) return;
     // Something opened up. Anything loose above or beside it may be hanging free now.
     for (const [dx, dy] of [[0, -1], [-1, 0], [1, 0]]) this.checkLoose(x + dx, y + dy);
-    if (was === T.MELT) this.flood(x, y);
     if (now !== T.AIR) return;
     this.scheduleRefreeze(x, y);
     // Magma above or beside a new hole pours in.
@@ -258,35 +255,6 @@ export class Environment {
     if (roll >= ENV.regrow) return null;
     const d = y - SKY;
     return w.pickMineral(d, w.layerAt(x, y), roll / ENV.regrow, 1.5);
-  }
-
-  /** Meltwater pours out of a pocket and pools at the lowest tunnel tiles it can reach. */
-  private flood(x: number, y: number): void {
-    const w = this.world;
-    const start = y * w.w + x;
-    const seen = new Set([start]);
-    const open: number[] = [start];
-    const reach: number[] = [];
-    while (open.length && reach.length < 60) {
-      const i = open.shift()!;
-      reach.push(i);
-      const cx = i % w.w;
-      const cy = Math.floor(i / w.w);
-      for (const [dx, dy] of [[0, 1], [-1, 0], [1, 0]]) {
-        const nx = cx + dx;
-        const ny = cy + dy;
-        const ni = ny * w.w + nx;
-        if (seen.has(ni) || Math.abs(nx - x) > 8 || ny - y > 10 || w.get(nx, ny) !== T.AIR) continue;
-        seen.add(ni);
-        open.push(ni);
-      }
-    }
-    reach.sort((a, b) => Math.floor(b / w.w) - Math.floor(a / w.w) || Math.abs((a % w.w) - x) - Math.abs((b % w.w) - x));
-    for (const i of reach.slice(0, ENV.flood)) {
-      w.set(i % w.w, Math.floor(i / w.w), T.WATER);
-      this.jobs.push({ at: this.clock + ENV.freeze + hash3(i, 0, 31) * 3, i, kind: 'freeze' });
-    }
-    this.out.fx.push({ t: 'flood', x, y });
   }
 
   // ---------------------------------------------------------------- falling tiles
