@@ -1,10 +1,8 @@
-// Local saves. The world is stored as its seed plus the tiles that changed.
+// Local saves for offline play. The world is stored as its seed plus the tiles that changed.
 
-import { newItems } from '../sim/items';
-import { newPlayer, type Player } from '../sim/player';
-import { newUpgrades } from '../sim/upgrades';
+import { revivePlayer } from '../sim/revive';
 import { World } from '../sim/world';
-import { Session } from './session';
+import { LocalSession } from './session';
 
 const KEY = 'permafrost.save.v1';
 
@@ -12,7 +10,7 @@ interface SaveData {
   v: 1;
   seed: number;
   width: number;
-  player: Player;
+  player: unknown;
   diffs: [number, number][];
   at: number;
 }
@@ -25,15 +23,11 @@ export function hasSave(): boolean {
   }
 }
 
-export function saveSession(s: Session): void {
-  const r = s.player.rig;
-  const player: Player = structuredClone(s.player);
+export function saveSession(s: LocalSession): void {
+  const p = s.player;
+  const r = p.rig;
   // Don't save half a dig: put the rig back where the dig started.
-  if (r.drill) {
-    player.rig.x = r.drill.sx;
-    player.rig.y = r.drill.sy;
-    player.rig.drill = null;
-  }
+  const player = r.drill ? { ...p, rig: { ...r, x: r.drill.sx, y: r.drill.sy, drill: null } } : p;
   const data: SaveData = { v: 1, seed: s.world.seed, width: s.world.w, player, diffs: [...s.world.diffs], at: Date.now() };
   try {
     localStorage.setItem(KEY, JSON.stringify(data));
@@ -42,7 +36,7 @@ export function saveSession(s: Session): void {
   }
 }
 
-export function loadSession(): Session | null {
+export function loadSession(): LocalSession | null {
   try {
     const raw = localStorage.getItem(KEY);
     if (!raw) return null;
@@ -51,19 +45,7 @@ export function loadSession(): Session | null {
     const world = new World(data.seed, data.width);
     world.applyDiffs(data.diffs);
     world.dirty.length = 0;
-    // Fill in anything added since the save was written.
-    const base = newPlayer(world);
-    const p = data.player;
-    const player: Player = {
-      ...base,
-      ...p,
-      upgrades: { ...newUpgrades(), ...p.upgrades },
-      items: { ...newItems(), ...p.items },
-      rig: { ...base.rig, ...p.rig, drill: null },
-      stats: { ...base.stats, ...p.stats },
-      seen: p.seen ?? [],
-    };
-    return new Session(world, player);
+    return new LocalSession(world, revivePlayer(world, data.player));
   } catch {
     return null;
   }
@@ -76,3 +58,22 @@ export function clearSave(): void {
     /* ignore */
   }
 }
+
+/** Small preferences that live outside any one game. */
+export const prefs = {
+  get(key: string): string | null {
+    try {
+      return localStorage.getItem(`permafrost.${key}`);
+    } catch {
+      return null;
+    }
+  },
+  set(key: string, value: string | null): void {
+    try {
+      if (value === null) localStorage.removeItem(`permafrost.${key}`);
+      else localStorage.setItem(`permafrost.${key}`, value);
+    } catch {
+      /* ignore */
+    }
+  },
+};

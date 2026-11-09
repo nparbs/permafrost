@@ -53,19 +53,19 @@ The finale: plant charges on the Hearth's heat vents while it pulses freezing wa
 - [x] Autosave in the browser
 - [x] Tests for world generation, physics, digging, temperature, upgrades and the station economy
 
-## v0.2: Online shared world
+## v0.2: Online shared world (works locally, not hosted yet)
 
-- [ ] One Node container (ws + node:sqlite) serves the page and `/ws`, using the same pattern as Trailer Park Tamers
+- [x] One Node server (ws + node:sqlite) serves the page and `/ws`, using the same pattern as Trailer Park Tamers (the Docker container is still to do)
 - [ ] Hosted at permafrost.parbs.online: joins the `scrap-riot_default` Docker network, gets a Cloudflare Tunnel hostname, a locked deploy key (`~/.ssh/permafrost-deploy` → `~/deploy-permafrost.sh`) and an `npm run ship` script
-- [ ] Accounts as 16-letter codes, with USE CODE to move to another device
-- [ ] The server owns the world. It is stored in SQLite as chunk diffs (32×32), and clients get the chunks near them plus each tile change as it happens
-- [ ] The server runs `src/sim` for every rig from their inputs. Clients predict their own rig and correct towards the server; other rigs are smoothed
-- [ ] The server owns cargo, cash and every purchase, and runs the same station functions as single player
-- [ ] Two rigs can't take the same tile: the first to finish gets the ore
-- [ ] Other miners show up with name tags and paint colors, plus chat and speech bubbles
-- [ ] A wider public map (about 240 tiles) with more than one station entrance
-- [ ] Rate limits, origin checks, and input checks on the server
-- [ ] Offline single player keeps working
+- [x] Accounts as 16-letter codes, with USE CODE to move to another device
+- [x] The server owns the world. It is stored in SQLite as seed plus changed tiles; clients download the changes on join, then get each tile change as it happens (send chunks near the player if this grows large)
+- [x] The server runs `src/sim` for every rig from their inputs. Clients predict their own rig and correct towards the server; other rigs are smoothed
+- [x] The server owns cargo, cash and every purchase, and runs the same station functions as single player
+- [x] Two rigs can't take the same tile: the first to finish gets the ore
+- [x] Other miners show up with name tags and paint colors, plus chat and speech bubbles
+- [x] A wider public map (240 tiles)
+- [x] Rate limits, origin checks, and input checks on the server, plus a cap on how fast a client can run
+- [x] Offline single player keeps working
 
 ## v0.3: The living ice
 

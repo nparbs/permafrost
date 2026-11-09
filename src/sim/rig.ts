@@ -93,6 +93,11 @@ function overlapsSolid(world: World, x: number, y: number): { x0: number; x1: nu
   return { x0, x1, y0, y1, hit };
 }
 
+/** True if a rig centred at (x, y) would overlap solid ground. */
+export function rigBlocked(world: World, x: number, y: number): boolean {
+  return overlapsSolid(world, x, y).hit;
+}
+
 function moveX(r: Rig, world: World, dx: number): void {
   if (dx === 0) return;
   r.x += dx;

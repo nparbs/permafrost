@@ -2,20 +2,19 @@
 
 import Phaser from 'phaser';
 import { RIG_H } from '../sim/player';
-import type { SimEvent } from '../sim/rig';
+import { RIG_THRUST, RIG_WRECKED, RigMode } from '../net/protocol';
 import { MINERALS } from '../sim/tiles';
 import { SKY } from '../sim/world';
-import type { Session } from './session';
+import type { GameSession, SessionEvent } from './session';
 import { TS, debrisColor, makeTextures, visIndex } from './textures';
 
 export interface SceneData {
-  session: Session;
+  session: GameSession;
   onFrame?: (scene: GameScene) => void;
 }
 
 export class GameScene extends Phaser.Scene {
-  session!: Session;
-  paint = 0;
+  session!: GameSession;
   private hooks!: SceneData;
   private layer!: Phaser.Tilemaps.TilemapLayer;
   private rig!: Phaser.GameObjects.Sprite;
@@ -29,6 +28,8 @@ export class GameScene extends Phaser.Scene {
   private mountains!: Phaser.GameObjects.TileSprite;
   private dustTimer = 0;
   private flash = 0;
+  private peerSprites = new Map<string, { rig: Phaser.GameObjects.Sprite; flame: Phaser.GameObjects.Image; tag: Phaser.GameObjects.Text; paint: number }>();
+  private bubbles = new Map<string, { text: Phaser.GameObjects.Text; until: number }>();
 
   constructor() {
     super('Game');
@@ -61,7 +62,7 @@ export class GameScene extends Phaser.Scene {
 
     for (const b of world.station) this.add.image(b.x * TS, SKY * TS, `b-${b.key}`).setOrigin(0, 1).setDepth(1);
 
-    this.rig = this.add.sprite(0, 0, `rig${this.paint}`, 'idle0').setDepth(5);
+    this.rig = this.add.sprite(0, 0, `rig${this.session.paint}`, 'idle0').setDepth(5);
     this.flame = this.add.image(0, 0, 'flame', 'f0').setDepth(4).setVisible(false);
 
     this.dust = this.add.particles(0, 0, 'px', {
@@ -115,6 +116,8 @@ export class GameScene extends Phaser.Scene {
     this.session.update(dt);
     this.refreshTiles();
     this.syncRig(dt);
+    this.syncPeers();
+    this.syncBubbles();
     this.syncSky();
     this.hooks.onFrame?.(this);
   }
@@ -148,8 +151,9 @@ export class GameScene extends Phaser.Scene {
 
   private syncRig(dt: number): void {
     const r = this.session.player.rig;
-    const px = r.x * TS;
-    const py = r.y * TS;
+    const pos = this.session.renderPos();
+    const px = pos.x * TS;
+    const py = pos.y * TS;
     const anim = Math.floor(this.time.now / 70) % 2;
     let frame = 'idle0';
     if (r.drill) frame = `${r.drill.dir === 'down' ? 'down' : 'side'}${anim}`;
@@ -194,7 +198,93 @@ export class GameScene extends Phaser.Scene {
     if (skyVisible) this.snowZone.setTo(view.x - 30, Math.max(0, view.y - 10), view.width + 60, Math.max(1, SKY * TS - view.y));
   }
 
-  private onEvent(e: SimEvent): void {
+  private syncPeers(): void {
+    const live = new Set<string>();
+    const anim = Math.floor(this.time.now / 70) % 2;
+    const world = this.session.world;
+    for (const p of this.session.peers()) {
+      live.add(p.id);
+      let s = this.peerSprites.get(p.id);
+      if (!s) {
+        s = {
+          rig: this.add.sprite(0, 0, `rig${p.paint}`, 'idle0').setDepth(4.5),
+          flame: this.add.image(0, 0, 'flame', 'f0').setDepth(4.4),
+          tag: this.label(p.name, '#cfe6ff', 6).setOrigin(0.5, 1).setDepth(8).setAlpha(0.85),
+          paint: p.paint,
+        };
+        this.peerSprites.set(p.id, s);
+      }
+      if (s.paint !== p.paint) {
+        s.rig.setTexture(`rig${p.paint}`);
+        s.paint = p.paint;
+      }
+      if (s.tag.text !== p.name) s.tag.setText(p.name);
+      const px = p.x * TS;
+      const py = p.y * TS;
+      let frame = 'idle0';
+      if (p.mode === RigMode.DrillDown) frame = `down${anim}`;
+      else if (p.mode === RigMode.DrillSide) frame = `side${anim}`;
+      else if (p.mode === RigMode.Moving) frame = `idle${anim}`;
+      s.rig.setFrame(frame).setFlipX(p.facing < 0).setPosition(px, py);
+      if (p.flags & RIG_WRECKED) s.rig.setTint(0x3a3a3a);
+      else s.rig.clearTint();
+      s.flame.setVisible((p.flags & RIG_THRUST) > 0).setPosition(px, py + (RIG_H / 2) * TS + 4).setFrame(`f${anim}`);
+      s.tag.setPosition(px, py - 8);
+      if (p.mode >= RigMode.DrillSide && Math.random() < 0.35) {
+        const tx = p.mode === RigMode.DrillDown ? Math.floor(p.x) : Math.floor(p.x + p.facing * 0.45);
+        const ty = p.mode === RigMode.DrillDown ? Math.floor(p.y + RIG_H / 2 + 0.05) : Math.floor(p.y);
+        this.dust.setParticleTint(debrisColor(world, tx, ty, world.get(tx, ty)));
+        this.dust.emitParticleAt(p.mode === RigMode.DrillDown ? px : px + p.facing * 9, p.mode === RigMode.DrillDown ? py + 9 : py + 1, 1);
+      }
+    }
+    for (const [id, s] of this.peerSprites) {
+      if (live.has(id)) continue;
+      s.rig.destroy();
+      s.flame.destroy();
+      s.tag.destroy();
+      this.peerSprites.delete(id);
+    }
+  }
+
+  private label(text: string, color: string, size = 8): Phaser.GameObjects.Text {
+    return this.add.text(0, 0, text, { fontFamily: 'Silkscreen, monospace', fontSize: `${size}px`, color, stroke: '#000000', strokeThickness: 2, resolution: 4 });
+  }
+
+  private showBubble(id: string, text: string): void {
+    this.bubbles.get(id)?.text.destroy();
+    const t = this.add
+      .text(0, 0, text, {
+        fontFamily: 'Silkscreen, monospace',
+        fontSize: '7px',
+        color: '#e6f2ff',
+        backgroundColor: '#0b1626',
+        padding: { x: 3, y: 2 },
+        wordWrap: { width: 110 },
+        resolution: 4,
+      })
+      .setOrigin(0.5, 1)
+      .setDepth(9);
+    this.bubbles.set(id, { text: t, until: this.time.now + 5000 });
+  }
+
+  private syncBubbles(): void {
+    for (const [id, b] of this.bubbles) {
+      if (this.time.now > b.until) {
+        b.text.destroy();
+        this.bubbles.delete(id);
+        continue;
+      }
+      if (id === this.session.myId()) {
+        b.text.setVisible(true).setPosition(this.rig.x, this.rig.y - 10);
+      } else {
+        const s = this.peerSprites.get(id);
+        b.text.setVisible(!!s);
+        if (s) b.text.setPosition(s.rig.x, s.rig.y - 16);
+      }
+    }
+  }
+
+  private onEvent(e: SessionEvent): void {
     const r = this.session.player.rig;
     const world = this.session.world;
     switch (e.t) {
@@ -232,6 +322,23 @@ export class GameScene extends Phaser.Scene {
         this.tweens.add({ targets: ring, radius: (e.r + 1) * TS, alpha: 0, duration: 320, onComplete: () => ring.destroy() });
         break;
       }
+      case 'peer-dug':
+        this.dust.setParticleTint(debrisColor(world, e.x, e.y, e.tile));
+        this.dust.emitParticleAt((e.x + 0.5) * TS, (e.y + 0.5) * TS, 5);
+        break;
+      case 'peer-blast': {
+        const cx = (e.x + 0.5) * TS;
+        const cy = (e.y + 0.5) * TS;
+        if (Math.hypot(e.x - r.x, e.y - r.y) < 10) this.cameras.main.shake(200, 0.006);
+        this.sparks.setParticleTint(0xffa030);
+        this.sparks.emitParticleAt(cx, cy, 20);
+        const ring = this.add.circle(cx, cy, 4, 0xffd060, 0.7).setDepth(8).setBlendMode(Phaser.BlendModes.ADD);
+        this.tweens.add({ targets: ring, radius: (e.r + 1) * TS, alpha: 0, duration: 320, onComplete: () => ring.destroy() });
+        break;
+      }
+      case 'chat':
+        this.showBubble(e.id, e.text);
+        break;
       case 'wrecked':
         this.cameras.main.shake(400, 0.015);
         this.sparks.setParticleTint(0xff6020);
@@ -251,7 +358,6 @@ export class GameScene extends Phaser.Scene {
   }
 
   setPaint(i: number): void {
-    this.paint = i;
     this.rig.setTexture(`rig${i}`, this.rig.frame.name);
   }
 }
