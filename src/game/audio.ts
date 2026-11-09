@@ -1,0 +1,175 @@
+// Sound effects synthesised with Web Audio. Nothing is loaded from files.
+
+export class Sfx {
+  private ctx?: AudioContext;
+  private master?: GainNode;
+  private noiseBuf?: AudioBuffer;
+  private drillGain?: GainNode;
+  private drillFilter?: BiquadFilterNode;
+  private drillOsc?: OscillatorNode;
+  private thrustGain?: GainNode;
+  muted = false;
+
+  constructor() {
+    try {
+      this.muted = localStorage.getItem('permafrost.muted') === '1';
+    } catch {
+      /* storage blocked */
+    }
+  }
+
+  /** Browsers only allow audio after a user gesture. */
+  unlock(): void {
+    if (this.ctx) {
+      if (this.ctx.state === 'suspended') void this.ctx.resume();
+      return;
+    }
+    const AC = window.AudioContext ?? (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+    if (!AC) return;
+    const ctx = new AC();
+    this.ctx = ctx;
+    this.master = ctx.createGain();
+    this.master.gain.value = this.muted ? 0 : 0.5;
+    this.master.connect(ctx.destination);
+    const len = ctx.sampleRate;
+    this.noiseBuf = ctx.createBuffer(1, len, ctx.sampleRate);
+    const d = this.noiseBuf.getChannelData(0);
+    for (let i = 0; i < len; i++) d[i] = Math.random() * 2 - 1;
+
+    // Drill loop: filtered noise plus a low grinding tone.
+    const n = this.loopNoise();
+    this.drillFilter = ctx.createBiquadFilter();
+    this.drillFilter.type = 'bandpass';
+    this.drillFilter.frequency.value = 400;
+    this.drillFilter.Q.value = 1.2;
+    this.drillGain = ctx.createGain();
+    this.drillGain.gain.value = 0;
+    n.connect(this.drillFilter).connect(this.drillGain).connect(this.master);
+    this.drillOsc = ctx.createOscillator();
+    this.drillOsc.type = 'sawtooth';
+    this.drillOsc.frequency.value = 55;
+    const og = ctx.createGain();
+    og.gain.value = 0.25;
+    this.drillOsc.connect(og).connect(this.drillGain);
+    this.drillOsc.start();
+
+    // Thruster loop: low rumble.
+    const t = this.loopNoise();
+    const lp = ctx.createBiquadFilter();
+    lp.type = 'lowpass';
+    lp.frequency.value = 500;
+    this.thrustGain = ctx.createGain();
+    this.thrustGain.gain.value = 0;
+    t.connect(lp).connect(this.thrustGain).connect(this.master);
+  }
+
+  setMuted(m: boolean): void {
+    this.muted = m;
+    try {
+      localStorage.setItem('permafrost.muted', m ? '1' : '0');
+    } catch {
+      /* storage blocked */
+    }
+    if (this.master && this.ctx) this.master.gain.setTargetAtTime(m ? 0 : 0.5, this.ctx.currentTime, 0.02);
+  }
+
+  private loopNoise(): AudioBufferSourceNode {
+    const s = this.ctx!.createBufferSource();
+    s.buffer = this.noiseBuf!;
+    s.loop = true;
+    s.start();
+    return s;
+  }
+
+  drill(on: boolean, hardness = 1): void {
+    if (!this.ctx || !this.drillGain) return;
+    const t = this.ctx.currentTime;
+    this.drillGain.gain.setTargetAtTime(on ? 0.22 : 0, t, on ? 0.02 : 0.05);
+    if (on) {
+      this.drillFilter!.frequency.setTargetAtTime(260 + hardness * 260, t, 0.05);
+      this.drillOsc!.frequency.setTargetAtTime(40 + hardness * 18 + Math.random() * 6, t, 0.03);
+    }
+  }
+
+  thrust(on: boolean): void {
+    if (!this.ctx || !this.thrustGain) return;
+    this.thrustGain.gain.setTargetAtTime(on ? 0.3 : 0, this.ctx.currentTime, 0.06);
+  }
+
+  tone(freq: number, dur: number, type: OscillatorType = 'square', vol = 0.15, delay = 0, slide = 0): void {
+    if (!this.ctx || !this.master) return;
+    const t = this.ctx.currentTime + delay;
+    const o = this.ctx.createOscillator();
+    const g = this.ctx.createGain();
+    o.type = type;
+    o.frequency.setValueAtTime(freq, t);
+    if (slide) o.frequency.exponentialRampToValueAtTime(Math.max(20, freq + slide), t + dur);
+    g.gain.setValueAtTime(0, t);
+    g.gain.linearRampToValueAtTime(vol, t + 0.005);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    o.connect(g).connect(this.master);
+    o.start(t);
+    o.stop(t + dur + 0.02);
+  }
+
+  private burst(dur: number, freq: number, vol: number, type: BiquadFilterType = 'lowpass'): void {
+    if (!this.ctx || !this.master || !this.noiseBuf) return;
+    const t = this.ctx.currentTime;
+    const s = this.ctx.createBufferSource();
+    s.buffer = this.noiseBuf;
+    const f = this.ctx.createBiquadFilter();
+    f.type = type;
+    f.frequency.setValueAtTime(freq, t);
+    f.frequency.exponentialRampToValueAtTime(Math.max(40, freq * 0.2), t + dur);
+    const g = this.ctx.createGain();
+    g.gain.setValueAtTime(vol, t);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    s.connect(f).connect(g).connect(this.master);
+    s.start(t);
+    s.stop(t + dur);
+  }
+
+  /** rank 0..1: how valuable the find is. */
+  pickup(rank: number): void {
+    const base = 520 + rank * 500;
+    this.tone(base, 0.08, 'square', 0.09);
+    this.tone(base * 1.5, 0.12, 'square', 0.09, 0.06);
+    if (rank > 0.6) this.tone(base * 2, 0.18, 'triangle', 0.1, 0.12);
+  }
+
+  sell(): void {
+    [660, 830, 990, 1320].forEach((f, i) => this.tone(f, 0.12, 'square', 0.08, i * 0.07));
+  }
+
+  buy(): void {
+    this.tone(440, 0.08, 'triangle', 0.15);
+    this.tone(880, 0.16, 'triangle', 0.15, 0.07);
+  }
+
+  error(): void {
+    this.tone(160, 0.18, 'square', 0.1, 0, -60);
+  }
+
+  click(): void {
+    this.tone(900, 0.03, 'square', 0.05);
+  }
+
+  thud(strength: number): void {
+    this.tone(90, 0.15 + strength * 0.1, 'sine', 0.2 + strength * 0.2, 0, -50);
+    this.burst(0.12, 600, 0.1 + strength * 0.2);
+  }
+
+  boom(): void {
+    this.burst(0.7, 1800, 0.6);
+    this.tone(70, 0.5, 'sine', 0.4, 0, -40);
+  }
+
+  alarm(): void {
+    this.tone(980, 0.09, 'square', 0.07);
+    this.tone(740, 0.09, 'square', 0.07, 0.11);
+  }
+
+  dug(): void {
+    this.burst(0.06, 1200, 0.06, 'bandpass');
+  }
+}

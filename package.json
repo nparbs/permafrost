@@ -1,0 +1,26 @@
+{
+  "name": "permafrost",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Drill down through a frozen planet, haul ore back up, upgrade your rig. Shared online world.",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "shots": "node scripts/screenshots.mjs"
+  },
+  "dependencies": {
+    "@fontsource/silkscreen": "5.3.0",
+    "phaser": "3.90.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.5",
+    "playwright-core": "1.56.1",
+    "typescript": "^5.6.0",
+    "vite": "^6.0.0",
+    "vitest": "^3.0.0"
+  }
+}

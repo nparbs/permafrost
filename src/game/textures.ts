@@ -1,0 +1,639 @@
+// All art is drawn here in code: the tileset, the rig, the station buildings and the sky.
+
+import type Phaser from 'phaser';
+import { hash3, valueNoise } from '../sim/rng';
+import { LAYERS, MINERALS, MINERAL_BASE, T, isSolid } from '../sim/tiles';
+import { SKY, type BuildingKey, type World } from '../sim/world';
+
+export const TS = 16;
+const COLS = 16;
+/** Tunnel backs: BACK_BASE + layer * 4 + (solid above ? 1 : 0) + (solid left ? 2 : 0). */
+export const BACK_BASE = 64;
+/** Things set into the ground: EMB_BASE + kind * 8 + layer. */
+export const EMB_BASE = 96;
+const EMB_GAS = MINERALS.length;
+const EMB_BOULDER = MINERALS.length + 1;
+const TILE_COUNT = EMB_BASE + (MINERALS.length + 2) * 8;
+
+type RGB = [number, number, number];
+
+const hex = (h: string): RGB => {
+  const n = parseInt(h.slice(1), 16);
+  return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+};
+const mix = (a: RGB, b: RGB, k: number): RGB => [a[0] + (b[0] - a[0]) * k, a[1] + (b[1] - a[1]) * k, a[2] + (b[2] - a[2]) * k];
+const shade = (a: RGB, k: number): RGB => (k >= 0 ? mix(a, [255, 255, 255], k) : mix(a, [0, 0, 0], -k));
+export const rgbNum = (c: RGB) => ((c[0] & 255) << 16) | ((c[1] & 255) << 8) | (c[2] & 255);
+
+interface Pal {
+  base: RGB;
+  dark: RGB;
+  light: RGB;
+  back: RGB;
+  accent: RGB;
+}
+const pal = (base: string, dark: string, light: string, back: string, accent = light): Pal => ({
+  base: hex(base), dark: hex(dark), light: hex(light), back: hex(back), accent: hex(accent),
+});
+
+export const LAYER_PAL: Pal[] = [
+  pal('#e6eef7', '#b4c4d8', '#ffffff', '#56667e'),
+  pal('#c2d2e3', '#94aac4', '#e8f0f8', '#46566e'),
+  pal('#6cb2df', '#3d82b6', '#bfe6ff', '#1d3c5a', '#e8f8ff'),
+  pal('#5b4737', '#3d2f24', '#7d6a58', '#2a2019', '#d2e2ec'),
+  pal('#6a6a73', '#4a4a53', '#8c8c96', '#25252b'),
+  pal('#3b3236', '#262024', '#574a4f', '#1c1416', '#ff6a20'),
+  pal('#2d2a46', '#1c1a31', '#4b4872', '#141225', '#40e0c8'),
+];
+
+/** The colour of debris for a tile, for particles. */
+export function debrisColor(world: World, x: number, y: number, tile: number): number {
+  if (tile >= MINERAL_BASE) return rgbNum(hex(MINERALS[tile - MINERAL_BASE].color));
+  if (tile === T.MAGMA) return 0xff7a20;
+  return rgbNum(LAYER_PAL[world.layerAt(x, y)].base);
+}
+
+class Px {
+  readonly img: ImageData;
+  constructor(readonly w: number, readonly h: number) {
+    this.img = new ImageData(w, h);
+  }
+  set(x: number, y: number, c: RGB, a = 255) {
+    if (x < 0 || y < 0 || x >= this.w || y >= this.h) return;
+    const i = (y * this.w + x) * 4;
+    const d = this.img.data;
+    if (a >= 255) {
+      d[i] = c[0]; d[i + 1] = c[1]; d[i + 2] = c[2]; d[i + 3] = 255;
+    } else {
+      const k = a / 255;
+      d[i] = d[i] + (c[0] - d[i]) * k;
+      d[i + 1] = d[i + 1] + (c[1] - d[i + 1]) * k;
+      d[i + 2] = d[i + 2] + (c[2] - d[i + 2]) * k;
+      d[i + 3] = Math.max(d[i + 3], a);
+    }
+  }
+  get(x: number, y: number): RGB {
+    const i = (y * this.w + x) * 4;
+    const d = this.img.data;
+    return [d[i], d[i + 1], d[i + 2]];
+  }
+  rect(x: number, y: number, w: number, h: number, c: RGB, a = 255) {
+    for (let j = y; j < y + h; j++) for (let i = x; i < x + w; i++) this.set(i, j, c, a);
+  }
+}
+
+// ---------------------------------------------------------------- tiles
+
+function paintLayer(px: Px, ox: number, oy: number, layer: number, v: number) {
+  const p = LAYER_PAL[layer];
+  for (let y = 0; y < TS; y++) {
+    for (let x = 0; x < TS; x++) {
+      const n = hash3(x + v * 17, y, 11 + layer);
+      const m = valueNoise((x + v * 16) / 4, y / 4, 5 + layer);
+      let c: RGB = p.base;
+      switch (layer) {
+        case 0: // snow: soft drifts and sparkles
+          c = mix(p.base, p.dark, Math.max(0, m - 0.55) * 0.9);
+          if (n > 0.95) c = p.light;
+          break;
+        case 1: { // firn: compacted bands
+          const band = Math.floor((y + valueNoise(x / 6 + v * 3, 0.5, 9) * 4) / 4) % 2;
+          c = band ? mix(p.base, p.dark, 0.35) : p.base;
+          if (n > 0.96) c = p.light;
+          break;
+        }
+        case 2: // glacier ice: streaks and cracks
+          c = mix(p.base, p.light, m * 0.3);
+          if ((x + y + v * 3) % 11 === 0) c = mix(c, p.light, 0.6);
+          if ((x * 2 - y + v * 7 + 64) % 13 === 0 && n > 0.3) c = mix(c, p.dark, 0.6);
+          if (n > 0.975) c = p.accent;
+          break;
+        case 3: // permafrost: frozen soil with pebbles and frost
+          c = mix(p.base, p.dark, m * 0.7);
+          if (n > 0.93) c = p.dark;
+          else if (n < 0.05) c = p.accent;
+          else if (n < 0.1) c = p.light;
+          break;
+        case 4: // granite
+          c = mix(p.base, p.dark, m * 0.6);
+          if (n > 0.92) c = p.light;
+          else if (n < 0.08) c = p.dark;
+          break;
+        case 5: { // basalt with glowing seams
+          c = mix(p.base, p.dark, m * 0.7);
+          const seam = valueNoise((x + v * 16) / 3, y / 3, 77);
+          if (Math.abs(seam - 0.5) < 0.03) c = mix(p.dark, p.accent, 0.55);
+          if (n > 0.95) c = p.light;
+          break;
+        }
+        case 6: { // hollow stone: cut blocks with glyphs
+          c = mix(p.base, p.dark, m * 0.4);
+          const row = Math.floor(y / 8);
+          if (y % 8 === 0 || (x + (row % 2) * 8 + v * 4) % 16 === 0) c = p.dark;
+          if (n > 0.985) c = p.accent;
+          break;
+        }
+      }
+      px.set(ox + x, oy + y, c);
+    }
+  }
+  if (layer === 6 && v % 2 === 0) {
+    // a small glyph
+    const gx = ox + 4 + (v % 3) * 2;
+    const gy = oy + 3;
+    for (const [dx, dy] of [[0, 0], [1, 0], [2, 0], [1, 1], [1, 2], [0, 2], [2, 2]]) px.set(gx + dx, gy + dy, mix(p.accent, p.dark, 0.35));
+  }
+}
+
+function paintMagma(px: Px, ox: number, oy: number, v: number) {
+  const cols = [hex('#8a1406'), hex('#d43a0a'), hex('#ff7a14'), hex('#ffc23a'), hex('#fff0a0')];
+  for (let y = 0; y < TS; y++) {
+    for (let x = 0; x < TS; x++) {
+      const m = valueNoise((x + v * 16) / 4, y / 4, 303);
+      const n = hash3(x + v * 16, y, 304);
+      let k = Math.min(4, Math.floor(m * 4.6));
+      if (n > 0.97) k = 4;
+      px.set(ox + x, oy + y, cols[k]);
+    }
+  }
+}
+
+function paintWall(px: Px, ox: number, oy: number, v: number) {
+  const a = hex('#14141b');
+  const b = hex('#22222c');
+  for (let y = 0; y < TS; y++) {
+    for (let x = 0; x < TS; x++) {
+      let c = (x + y + v) % 6 < 2 ? b : a;
+      if (hash3(x + v * 16, y, 401) > 0.95) c = hex('#30303c');
+      px.set(ox + x, oy + y, c);
+    }
+  }
+}
+
+function paintPad(px: Px, ox: number, oy: number, v: number) {
+  const base = hex('#8d9096');
+  for (let y = 0; y < TS; y++) {
+    for (let x = 0; x < TS; x++) {
+      const n = hash3(x + v * 16, y, 501);
+      let c = mix(base, hex('#6c6f75'), n * 0.4);
+      if (x === 0 || y === 15) c = hex('#5c5f64');
+      if (y < 3) c = (x + y) % 6 < 3 ? hex('#f2c230') : hex('#2a2a2e');
+      if (y === 3) c = hex('#4a4c50');
+      px.set(ox + x, oy + y, c);
+    }
+  }
+}
+
+function paintBack(px: Px, ox: number, oy: number, layer: number, above: boolean, left: boolean) {
+  const p = LAYER_PAL[layer];
+  for (let y = 0; y < TS; y++) {
+    for (let x = 0; x < TS; x++) {
+      const m = valueNoise(x / 4, y / 4, 600 + layer);
+      let c = mix(p.back, shade(p.back, -0.35), m * 0.7);
+      if (hash3(x, y, 610 + layer) > 0.96) c = shade(p.back, 0.12);
+      let dark = 0;
+      if (above && y < 5) dark = Math.max(dark, ((5 - y) / 5) * 0.55);
+      if (left && x < 3) dark = Math.max(dark, ((3 - x) / 3) * 0.4);
+      px.set(ox + x, oy + y, shade(c, -dark));
+    }
+  }
+}
+
+function blob(px: Px, cx: number, cy: number, col: RGB, light: RGB) {
+  const dark = shade(col, -0.45);
+  const cells = [[0, -1], [1, -1], [-1, 0], [0, 0], [1, 0], [2, 0], [0, 1], [1, 1]];
+  for (const [dx, dy] of cells) px.set(cx + dx, cy + dy, col);
+  px.set(cx + 1, cy + 2, dark);
+  px.set(cx + 2, cy + 1, dark);
+  px.set(cx, cy - 1, light);
+  px.set(cx - 1, cy, mix(col, light, 0.5));
+}
+
+function crystal(px: Px, cx: number, cy: number, col: RGB, light: RGB) {
+  const dark = shade(col, -0.45);
+  const rows: [number, number][] = [[-3, 0], [-2, 1], [-1, 1], [0, 1], [1, 1], [2, 0]];
+  for (const [dy, hw] of rows) for (let dx = -hw; dx <= hw; dx++) px.set(cx + dx, cy + dy, dx < 0 ? mix(col, light, 0.45) : col);
+  px.set(cx, cy - 3, light);
+  px.set(cx + 1, cy + 1, dark);
+  px.set(cx, cy + 2, dark);
+  px.set(cx - 1, cy - 1, light);
+}
+
+function paintEmbedded(px: Px, ox: number, oy: number, kind: number, layer: number) {
+  paintLayer(px, ox, oy, layer, 1);
+  if (kind === EMB_GAS) {
+    const tint = hex('#c8e04a');
+    for (let y = 0; y < TS; y++) for (let x = 0; x < TS; x++) {
+      const m = valueNoise(x / 3, y / 3, 707 + layer);
+      if (m > 0.55) px.set(ox + x, oy + y, mix(px.get(ox + x, oy + y), tint, 0.22));
+    }
+    for (const [x, y] of [[4, 5], [10, 9], [7, 12]]) px.set(ox + x, oy + y, mix(tint, hex('#ffffff'), 0.3), 200);
+    return;
+  }
+  if (kind === EMB_BOULDER) {
+    const base = mix(hex('#7a7470'), LAYER_PAL[layer].base, 0.25);
+    const dark = shade(base, -0.5);
+    for (let y = 0; y < TS; y++) for (let x = 0; x < TS; x++) {
+      const dx = x - 7.5;
+      const dy = y - 8;
+      const r = Math.sqrt(dx * dx * 1.0 + dy * dy * 1.15);
+      if (r > 7.2) continue;
+      let c = mix(base, shade(base, 0.35), Math.max(0, (-dx - dy) / 12));
+      if (r > 6.3) c = dark;
+      else if (hash3(x, y, 808) > 0.9) c = shade(base, -0.2);
+      px.set(ox + x, oy + y, c);
+    }
+    for (const [x, y] of [[9, 5], [10, 6], [10, 7], [6, 10], [7, 11]]) px.set(ox + x, oy + y, dark);
+    return;
+  }
+  const m = MINERALS[kind];
+  const col = hex(m.color);
+  const light = hex(m.light);
+  if (m.kind === 'ore') {
+    const spots: [number, number][] = [[3, 3], [9, 2], [6, 7], [11, 9], [3, 11], [8, 12]];
+    spots.forEach(([x, y], i) => {
+      if (hash3(kind, i, 900) < 0.8) blob(px, ox + x, oy + y, col, light);
+    });
+  } else if (m.kind === 'gem') {
+    const spots: [number, number][] = [[4, 5], [10, 4], [7, 10], [12, 11]];
+    spots.forEach(([x, y], i) => {
+      if (i < 3 || hash3(kind, i, 901) < 0.5) crystal(px, ox + x, oy + y, col, light);
+    });
+  } else if (m.key === 'fossil') {
+    const dark = shade(col, -0.5);
+    px.rect(ox + 4, oy + 7, 8, 2, col);
+    for (const x of [2, 12]) {
+      px.rect(ox + x, oy + 6, 2, 2, col);
+      px.rect(ox + x, oy + 8, 2, 2, col);
+    }
+    px.rect(ox + 4, oy + 9, 8, 1, dark);
+    for (const x of [6, 8, 10]) px.set(ox + x, oy + 6, light);
+  } else if (m.key === 'cache') {
+    const dark = shade(col, -0.5);
+    px.rect(ox + 3, oy + 5, 10, 7, col);
+    px.rect(ox + 3, oy + 7, 10, 1, light);
+    px.rect(ox + 3, oy + 11, 10, 1, dark);
+    px.rect(ox + 12, oy + 5, 1, 7, dark);
+    px.rect(ox + 7, oy + 6, 2, 3, hex('#2a2a2e'));
+  } else {
+    for (let y = 0; y < TS; y++) for (let x = 0; x < TS; x++) {
+      const r = Math.hypot(x - 7.5, y - 7.5);
+      if (r < 5.2) px.set(ox + x, oy + y, r < 1.6 ? light : r > 4.2 ? shade(col, -0.4) : r > 3 ? col : shade(col, -0.25));
+    }
+  }
+}
+
+function buildTileset(): HTMLCanvasElement {
+  const rows = Math.ceil(TILE_COUNT / COLS);
+  const px = new Px(COLS * TS, rows * TS);
+  const at = (i: number): [number, number] => [(i % COLS) * TS, Math.floor(i / COLS) * TS];
+  for (let v = 0; v < 4; v++) {
+    for (let layer = 0; layer < LAYERS.length; layer++) {
+      const [x, y] = at(LAYERS[layer].tile * 4 + v);
+      paintLayer(px, x, y, layer, v);
+    }
+    paintMagma(px, ...at(T.MAGMA * 4 + v), v);
+    paintWall(px, ...at(T.WALL * 4 + v), v);
+    paintPad(px, ...at(T.PAD * 4 + v), v);
+  }
+  for (let layer = 0; layer < LAYERS.length; layer++) {
+    for (let f = 0; f < 4; f++) paintBack(px, ...at(BACK_BASE + layer * 4 + f), layer, (f & 1) > 0, (f & 2) > 0);
+    for (let k = 0; k < MINERALS.length + 2; k++) paintEmbedded(px, ...at(EMB_BASE + k * 8 + layer), k, layer);
+  }
+  return toCanvas(px);
+}
+
+function toCanvas(px: Px): HTMLCanvasElement {
+  const c = document.createElement('canvas');
+  c.width = px.w;
+  c.height = px.h;
+  c.getContext('2d')!.putImageData(px.img, 0, 0);
+  return c;
+}
+
+/** The tileset frame for a world tile, or -1 for open sky. */
+export function visIndex(world: World, x: number, y: number): number {
+  const t = world.get(x, y);
+  if (t === T.AIR) {
+    if (y < SKY) return -1;
+    const above = isSolid(world.get(x, y - 1)) ? 1 : 0;
+    const left = isSolid(world.get(x - 1, y)) ? 2 : 0;
+    return BACK_BASE + world.layerAt(x, y) * 4 + above + left;
+  }
+  if (t >= MINERAL_BASE) return EMB_BASE + (t - MINERAL_BASE) * 8 + world.layerAt(x, y);
+  if (t === T.GAS) return EMB_BASE + EMB_GAS * 8 + world.layerAt(x, y);
+  if (t === T.BOULDER) return EMB_BASE + EMB_BOULDER * 8 + world.layerAt(x, y);
+  return t * 4 + Math.floor(hash3(x, y, 12) * 4);
+}
+
+// ---------------------------------------------------------------- rig
+
+export const RIG_FRAME = 20;
+export const RIG_FRAMES = ['idle0', 'idle1', 'side0', 'side1', 'down0', 'down1'] as const;
+
+function paintRig(px: Px, ox: number, mode: 'idle' | 'side' | 'down', anim: number, paint: RGB) {
+  const dark = shade(paint, -0.38);
+  const light = shade(paint, 0.3);
+  const steel = hex('#5a5a62');
+  const P = (x: number, y: number, c: RGB) => px.set(ox + x, y, c);
+  const R = (x: number, y: number, w: number, h: number, c: RGB) => px.rect(ox + x, y, w, h, c);
+  // exhaust stack
+  R(5, 1, 2, 6, steel);
+  P(5, 1, hex('#3a3a40'));
+  P(6, 1, hex('#3a3a40'));
+  // cab
+  R(7, 3, 7, 5, dark);
+  R(8, 4, 5, 3, hex('#8fe0fb'));
+  P(8, 4, hex('#ffffff'));
+  P(12, 6, hex('#5ab4d8'));
+  // chassis
+  R(4, 7, 12, 5, paint);
+  R(4, 7, 12, 1, light);
+  R(4, 11, 12, 1, dark);
+  for (const x of [5, 8, 11, 14]) P(x, 9, dark);
+  P(15, 8, hex('#ffe680'));
+  // tracks
+  R(4, 12, 12, 4, hex('#26262c'));
+  R(5, 12, 10, 1, hex('#3c3c44'));
+  for (let i = 0; i < 4; i++) R(5 + i * 3, 13, 2, 2, hex('#8a8a94'));
+  for (let x = 4; x < 16; x++) if ((x + anim) % 2 === 0) P(x, 15, hex('#4a4a54'));
+  for (const [x, y] of [[4, 12], [15, 12], [4, 15], [15, 15]]) px.set(ox + x, y, [0, 0, 0], 0);
+  const bitA = hex('#d6dae0');
+  const bitB = hex('#767c86');
+  if (mode === 'down') {
+    R(9, 16, 2, 1, steel);
+    const rows: [number, number, number][] = [[17, 7, 6], [18, 8, 4], [19, 9, 2]];
+    for (const [y, x0, w] of rows) for (let x = x0; x < x0 + w; x++) P(x, y, (x + anim) % 2 ? bitA : bitB);
+  } else {
+    R(16, 8, 1, 3, steel);
+    const len = mode === 'side' ? 3 : 1;
+    const cols: [number, number, number][] = [[17, 7, 5], [18, 8, 3], [19, 9, 1]];
+    for (const [x, y0, h] of cols.slice(0, len)) for (let y = y0; y < y0 + h; y++) P(x, y, (y + anim) % 2 ? bitA : bitB);
+  }
+}
+
+function buildRig(paint: string): HTMLCanvasElement {
+  const px = new Px(RIG_FRAME * RIG_FRAMES.length, RIG_FRAME);
+  const col = hex(paint);
+  RIG_FRAMES.forEach((name, i) => {
+    const mode = name.startsWith('idle') ? 'idle' : name.startsWith('side') ? 'side' : 'down';
+    paintRig(px, i * RIG_FRAME, mode, Number(name.slice(-1)), col);
+  });
+  return toCanvas(px);
+}
+
+function buildFlame(): HTMLCanvasElement {
+  const px = new Px(16, 8);
+  const c = [hex('#fff4b8'), hex('#ffd040'), hex('#ff8a20'), hex('#ff4a10')];
+  for (let f = 0; f < 2; f++) {
+    const ox = f * 8;
+    const rows: [number, number, number, number][] = [[0, 2, 4, 0], [1, 1, 6, 1], [2, 1, 6, 1], [3, 2, 4, 2], [4, 2, 4, 2], [5, 3, 2, 3]];
+    if (f === 1) rows.push([6, 3, 2, 3]);
+    for (const [y, x, w, k] of rows) px.rect(ox + x, y, w, 1, c[k]);
+  }
+  return toCanvas(px);
+}
+
+// ---------------------------------------------------------------- buildings
+
+function snowCap(px: Px, x: number, y: number, w: number) {
+  const s = hex('#f2f6fb');
+  const d = hex('#c4d2e2');
+  px.rect(x, y, w, 2, s);
+  for (let i = x; i < x + w; i += 3) px.set(i, y + 2, d);
+}
+
+function paintBuilding(px: Px, key: BuildingKey) {
+  const lit = hex('#ffd36a');
+  const glass = hex('#2b3b52');
+  const R = (x: number, y: number, w: number, h: number, c: RGB) => px.rect(x, y, w, h, c);
+  const sign = (cx: number, cy: number, col: RGB, draw: () => void) => {
+    R(cx - 6, cy - 6, 12, 12, hex('#1b2232'));
+    R(cx - 5, cy - 5, 10, 10, col);
+    draw();
+    R(cx - 1, cy + 6, 2, 4, hex('#3a3f4a'));
+  };
+  switch (key) {
+    case 'fuel': {
+      // storage tank
+      const red = hex('#c8402a');
+      R(3, 18, 26, 30, red);
+      R(3, 18, 3, 30, shade(red, 0.25));
+      R(26, 18, 3, 30, shade(red, -0.3));
+      R(3, 28, 26, 4, hex('#efefef'));
+      R(5, 16, 22, 2, red);
+      snowCap(px, 5, 14, 22);
+      R(12, 40, 8, 8, shade(red, -0.45));
+      // canopy and pump
+      R(32, 20, 30, 3, hex('#2a3a50'));
+      snowCap(px, 32, 18, 30);
+      R(59, 23, 2, 25, hex('#4a5568'));
+      R(40, 30, 9, 18, hex('#e6e6e6'));
+      R(41, 32, 7, 4, hex('#3ad0ff'));
+      R(48, 38, 3, 1, hex('#222'));
+      R(50, 38, 1, 8, hex('#222'));
+      sign(53, 8, hex('#e8a020'), () => {
+        R(52, 4, 2, 2, hex('#1b2232'));
+        R(51, 6, 4, 4, hex('#1b2232'));
+        R(52, 10, 2, 1, hex('#1b2232'));
+      });
+      break;
+    }
+    case 'assay': {
+      const wall = hex('#3c5a78');
+      R(4, 16, 56, 32, wall);
+      R(4, 16, 56, 2, shade(wall, 0.2));
+      R(2, 12, 60, 4, hex('#24384c'));
+      snowCap(px, 2, 10, 60);
+      R(27, 32, 10, 16, hex('#1a2430'));
+      R(29, 34, 6, 5, lit);
+      for (const x of [9, 44]) {
+        R(x, 22, 11, 8, glass);
+        R(x + 1, 23, 9, 6, lit);
+        R(x + 5, 23, 1, 6, glass);
+      }
+      R(4, 46, 56, 2, shade(wall, -0.35));
+      sign(32, 4, hex('#2b3b52'), () => {
+        for (let y = -3; y <= 3; y++) for (let x = -3; x <= 3; x++) if (x * x + y * y <= 10) px.set(32 + x, 4 + y, hex('#f0c030'));
+        R(31, 2, 2, 5, hex('#a07010'));
+      });
+      break;
+    }
+    case 'shop': {
+      const wall = hex('#c86a1e');
+      R(2, 14, 60, 34, wall);
+      R(2, 14, 60, 2, shade(wall, 0.25));
+      R(0, 10, 64, 4, hex('#5a3010'));
+      snowCap(px, 0, 8, 64);
+      R(8, 22, 38, 26, hex('#4a4f58'));
+      for (let y = 24; y < 48; y += 3) R(9, y, 36, 1, hex('#6a707a'));
+      R(8, 22, 38, 1, hex('#2a2e34'));
+      for (let x = 10; x < 46; x += 6) R(x, 20, 3, 2, hex('#f2c230'));
+      R(50, 24, 9, 7, glass);
+      R(51, 25, 7, 5, lit);
+      sign(54, 4, hex('#2b3b52'), () => {
+        for (let y = -4; y <= 4; y++) for (let x = -4; x <= 4; x++) {
+          const r = Math.hypot(x, y);
+          const ang = Math.atan2(y, x);
+          const tooth = Math.cos(ang * 6) > 0.3 ? 4.4 : 3.2;
+          if (r <= tooth && r > 1.2) px.set(54 + x, 4 + y, hex('#c8ccd4'));
+        }
+      });
+      break;
+    }
+    case 'repair': {
+      const wall = hex('#3a7a4a');
+      R(6, 18, 44, 30, wall);
+      R(6, 18, 44, 2, shade(wall, 0.25));
+      R(4, 14, 48, 4, hex('#204a2c'));
+      snowCap(px, 4, 12, 48);
+      R(14, 28, 26, 20, hex('#2a3530'));
+      R(16, 30, 22, 2, hex('#44544c'));
+      // crane
+      R(54, 4, 3, 44, hex('#e0b020'));
+      R(34, 4, 22, 3, hex('#e0b020'));
+      for (let x = 35; x < 55; x += 3) px.set(x, 5, hex('#8a6a10'));
+      R(38, 7, 1, 10, hex('#30343a'));
+      R(36, 17, 5, 2, hex('#30343a'));
+      sign(22, 6, hex('#e8e8e8'), () => {
+        R(21, 2, 2, 9, hex('#d03030'));
+        R(18, 5, 8, 2, hex('#d03030'));
+      });
+      break;
+    }
+    case 'supply': {
+      const wood = hex('#7a5232');
+      R(4, 18, 40, 30, wood);
+      for (let y = 20; y < 48; y += 4) R(4, y, 40, 1, shade(wood, -0.3));
+      R(2, 14, 44, 4, hex('#3a2416'));
+      snowCap(px, 2, 12, 44);
+      R(18, 30, 10, 18, hex('#2a1a10'));
+      R(8, 24, 7, 6, lit);
+      R(33, 24, 7, 6, lit);
+      // crates
+      const crate = hex('#a8783a');
+      for (const [x, y, s] of [[46, 36, 12], [50, 26, 10], [58, 40, 6]] as [number, number, number][]) {
+        R(x, y, s, s, crate);
+        R(x, y, s, 1, shade(crate, 0.3));
+        R(x, y + s - 1, s, 1, shade(crate, -0.4));
+        R(x + s - 1, y, 1, s, shade(crate, -0.4));
+        for (let i = 1; i < s - 1; i++) px.set(x + i, y + i, shade(crate, -0.25));
+      }
+      snowCap(px, 50, 24, 10);
+      sign(12, 6, hex('#2b3b52'), () => {
+        R(9, 3, 7, 6, hex('#c89048'));
+        R(9, 5, 7, 1, hex('#7a5232'));
+        R(12, 3, 1, 6, hex('#7a5232'));
+      });
+      break;
+    }
+  }
+}
+
+function buildBuilding(key: BuildingKey): HTMLCanvasElement {
+  const px = new Px(64, 48);
+  paintBuilding(px, key);
+  return toCanvas(px);
+}
+
+// ---------------------------------------------------------------- sky
+
+function buildSky(): HTMLCanvasElement {
+  const c = document.createElement('canvas');
+  c.width = 4;
+  c.height = 160;
+  const g = c.getContext('2d')!;
+  const grad = g.createLinearGradient(0, 0, 0, 160);
+  grad.addColorStop(0, '#04060f');
+  grad.addColorStop(0.45, '#0d1b3a');
+  grad.addColorStop(0.8, '#1d3f63');
+  grad.addColorStop(1, '#3a6a8a');
+  g.fillStyle = grad;
+  g.fillRect(0, 0, 4, 160);
+  return c;
+}
+
+function buildStars(): HTMLCanvasElement {
+  const px = new Px(128, 96);
+  for (let i = 0; i < 70; i++) {
+    const x = Math.floor(hash3(i, 1, 41) * 128);
+    const y = Math.floor(hash3(i, 2, 41) * 96);
+    const b = hash3(i, 3, 41);
+    px.set(x, y, [220, 232, 255], Math.floor(90 + b * 165));
+  }
+  return toCanvas(px);
+}
+
+function buildAurora(): HTMLCanvasElement {
+  const px = new Px(256, 64);
+  const green = hex('#5cffb0');
+  const teal = hex('#3ad6ff');
+  for (let x = 0; x < 256; x++) {
+    const a = (x / 256) * Math.PI * 2;
+    const top = 14 + Math.sin(a * 2) * 8 + Math.sin(a * 5 + 1) * 4;
+    const len = 26 + Math.sin(a * 3 + 2) * 10;
+    const bright = 0.5 + 0.5 * Math.sin(a * 7);
+    for (let y = Math.floor(top); y < top + len && y < 64; y++) {
+      const k = (y - top) / len;
+      const alpha = (1 - k) * (0.25 + 0.75 * bright) * 120;
+      px.set(x, y, mix(green, teal, k), Math.floor(alpha));
+    }
+  }
+  return toCanvas(px);
+}
+
+function buildMountains(): HTMLCanvasElement {
+  const px = new Px(256, 80);
+  const far = hex('#1b2a46');
+  const near = hex('#26385a');
+  const snow = hex('#9fb4d0');
+  const ridge = (x: number, seed: number, base: number, amp: number) =>
+    base - (valueNoise(x / 22, 0.5, seed) * amp + valueNoise(x / 7, 0.5, seed + 1) * amp * 0.3);
+  // tileable: noise wraps by blending the ends
+  const wrap = (x: number, seed: number, base: number, amp: number) => {
+    const k = x / 256;
+    return ridge(x, seed, base, amp) * (1 - k) + ridge(x - 256, seed, base, amp) * k;
+  };
+  for (let x = 0; x < 256; x++) {
+    const h1 = wrap(x, 21, 54, 50);
+    const h2 = wrap(x, 37, 78, 34);
+    for (let y = 0; y < 80; y++) {
+      if (y >= h2) px.set(x, y, y < h2 + 3 ? snow : near);
+      else if (y >= h1) px.set(x, y, y < h1 + 2 ? mix(snow, far, 0.4) : far);
+    }
+  }
+  return toCanvas(px);
+}
+
+function buildDot(size: number, color = '#ffffff'): HTMLCanvasElement {
+  const c = document.createElement('canvas');
+  c.width = size;
+  c.height = size;
+  const g = c.getContext('2d')!;
+  g.fillStyle = color;
+  g.fillRect(0, 0, size, size);
+  return c;
+}
+
+export const PAINTS = ['#f2a81d', '#e24a3a', '#3a8ae2', '#46c86a', '#b05ae0', '#e8e8f0'];
+
+/** Register every texture with Phaser once. */
+export function makeTextures(scene: Phaser.Scene): void {
+  const tx = scene.textures;
+  if (tx.exists('tiles')) return;
+  tx.addCanvas('tiles', buildTileset());
+  PAINTS.forEach((paint, i) => {
+    const t = tx.addCanvas(`rig${i}`, buildRig(paint))!;
+    RIG_FRAMES.forEach((name, f) => t.add(name, 0, f * RIG_FRAME, 0, RIG_FRAME, RIG_FRAME));
+  });
+  const flame = tx.addCanvas('flame', buildFlame())!;
+  flame.add('f0', 0, 0, 0, 8, 8);
+  flame.add('f1', 0, 8, 0, 8, 8);
+  for (const key of ['fuel', 'assay', 'shop', 'repair', 'supply'] as BuildingKey[]) tx.addCanvas(`b-${key}`, buildBuilding(key));
+  tx.addCanvas('sky', buildSky());
+  tx.addCanvas('stars', buildStars());
+  tx.addCanvas('aurora', buildAurora());
+  tx.addCanvas('mountains', buildMountains());
+  tx.addCanvas('px', buildDot(2));
+  tx.addCanvas('px1', buildDot(1));
+}
