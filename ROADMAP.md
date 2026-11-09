@@ -66,9 +66,9 @@ The finale: plant charges on the Hearth's heat vents while it pulses freezing wa
 - [x] A wider public map (240 tiles)
 - [x] Rate limits, origin checks, and input checks on the server, plus a cap on how fast a client can run
 - [x] Offline single player keeps working
-- [x] Phone polish (2026-11-09, not shipped yet): no keyboard hints on touch screens, a big Enter button right above thrust when parked at a building, and a title screen that fits 640x360
+- [x] Phone polish (shipped in v0.3.0): no keyboard hints on touch screens, a big Enter button right above thrust when parked at a building, and a title screen that fits 640x360
 
-## v0.3: The living ice (built 2026-11-09, not shipped yet)
+## v0.3: The living ice (live since 2026-11-09) ✅
 
 - [x] Rounded tunnels: dug edges and corners are drawn round on a second tile grid offset by half a tile, and the drill carves a round bite as it goes
 - [x] Refreeze: tunnels in the snow, firn and glacier frost over into thin rime (8, 12 and 18 minutes), never near a rig. Thrusting up into rime breaks it, so a refrozen shaft can't trap anyone. Some ore grows back, but only where it has solid ground under it, so it never caps a shaft
