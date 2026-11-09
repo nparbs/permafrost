@@ -1,7 +1,7 @@
 {
   "name": "permafrost",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Drill down through a frozen planet, haul ore back up, upgrade your rig. Shared online world.",
   "type": "module",
   "scripts": {
