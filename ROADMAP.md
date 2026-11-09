@@ -79,7 +79,7 @@ The finale: plant charges on the Hearth's heat vents while it pulses freezing wa
 - [x] Steam vents in the Geothermal Zone blow every 6 seconds, scalding and lifting anything above them. Magma pours into a tunnel opened beside it, runs up to 3 tiles, and cools into diggable slag after 30 seconds
 - [x] Music: an ambient mood for each layer, all synthesized, with a Music on/off switch in the menu
 
-## v0.3.1: Finding each other (built 2026-11-09, not shipped yet)
+## v0.3.1: Finding each other (live since 2026-11-09) ✅
 
 - [x] Phone fix: station panels (the Machine Shop most of all) scroll with a finger, so every upgrade can be reached. The panel is a flex box sized to the screen, the page no longer blocks touch scrolling everywhere (only the game canvas and touch buttons do), and buying something keeps your place in the list
 - [x] Upgrade cards show what each line does (it was only a hover tooltip, which phones never show)

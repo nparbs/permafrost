@@ -1,10 +1,10 @@
 # Handoff
 
-Last updated 2026-11-09 (v0.3.0 live; v0.3.1 built and tested locally, not committed or shipped: phone panel scrolling, minimap and map, meltwater as fuel, SOS rescues). Read ROADMAP.md for the plan and the decisions the user has made, and CLAUDE.md for the working rules.
+Last updated 2026-11-09 (v0.3.1 live: phone panel scrolling, minimap and map, meltwater as fuel, SOS rescues). Read ROADMAP.md for the plan and the decisions the user has made, and CLAUDE.md for the working rules.
 
 ## Where things stand
 
-- **v0.3.1 (not committed, not shipped)** is in the working tree. See the v0.3.1 section of ROADMAP.md for the list. The details:
+- **v0.3.1 is live** at https://permafrost.parbs.online (shipped 2026-11-09, commit 4fb5830). The ship passed typecheck, tests and both builds, /health reports 0.3.1, and the page's script and stylesheet through Cloudflare match the build. See the v0.3.1 section of ROADMAP.md for the list. The details:
   - Phone panels: `.panel` is now a flex box (it was a grid, whose auto row can grow past the screen in some engines), the card is `max-height: 100%`, and `.card .body` scrolls with `touch-action: pan-y`. The page itself is `touch-action: pan-y` instead of `none` (some phone browsers carry a page-wide `none` into every scroll box); `#game` and `.tbtn` still block every gesture. `rerender()` keeps the body's scroll position. Headless Chrome scrolled even with the old CSS, so the real-phone cause couldn't be reproduced here; both likely causes are fixed. `npm run uicheck` swipes the shop with real touch events (CDP `synthesizeScrollGesture` does nothing headless).
   - Map: `src/ui/minimap.ts` has `Minimap` (HUD, 64x44 tiles around you, arrows for miners outside it, shown only online with someone else on) and `WorldMap` (the Map panel: a list plus the world from the sky down to below the deepest miner). The server broadcasts `{ t: 'map', p: [id, x, y, flags][] }` every 60 ticks when 2+ are online, and `NetSession.mapPeers()` mixes it with the smoothed nearby rigs. Ore is never drawn on either.
   - Meltwater: `T.MELT` is fuel (`MELT_FUEL` in `rig.ts`: 40% of the tank, at least 4 L, emits a `refill` event). `MELT_CHANCE` is 0.011 from 32 tiles down (was 0.008 from 36), a superset of the old pockets. The flood code is gone. `T.WATER` is never made now; any left in the live world's diffs freezes into rime after a restart, as before.
@@ -56,7 +56,7 @@ If port 8791 is already taken by an old local server, build with `npx vite build
 
 ## Next steps
 
-0. **v0.3.1 is waiting on the user** to commit and ship (`npm run ship`). Shipping drops connections for a few seconds and the protocol bump makes open pages refresh. After it's live, watch whether the shop now scrolls on the user's phone: it couldn't be reproduced in headless Chrome.
+0. **v0.3.1 is live.** Ask the user whether the shop now scrolls on their phone: the bug couldn't be reproduced in headless Chrome, so this is the real test. Nobody has used the minimap or an SOS with real players yet.
 1. **v0.3 is shipped.** The public world kept its seed and diffs, so tunnels dug before v0.3 start their refreeze clocks from the deploy. Nobody has played v0.3 online with real players yet, so watch for feedback on the tuning items in step 5.
 2. **v0.2 is done.** The repo went public on 2026-11-09. The VM runs `~/permafrost` with `~/deploy-permafrost.sh`, and the PC's `~/.ssh/permafrost-deploy` key plus `.deploy.local.json` (git-ignored) drive `npm run ship`. The first ship passed every check: the page and assets load through Cloudflare, `/ws` opens from the real origin, and other origins are refused. Nightly backups: `~/backup-permafrost.sh` runs from cron at 04:30 into `~/permafrost-backups` and keeps 14 days, set up by `deb-soft-haven` and the same as TPT's.
 3. **Public map width:** the server uses 240 (`PUBLIC_WIDTH` in `server/game.ts`). The user never confirmed the expected player count, so 240 and 4-week seasons are defaults. Season rollover isn't written yet: `worlds.season` stays at 1. It's planned under the Seasons item in ROADMAP.md, and should land before 4 weeks pass on the live world (from 2026-11-09).
