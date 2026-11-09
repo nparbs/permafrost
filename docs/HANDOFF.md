@@ -31,7 +31,7 @@ npm run shots    # screenshots (desktop, phone)
 
 ## Next steps
 
-1. **v0.2 is done.** The repo went public on 2026-11-09. The VM runs `~/permafrost` with `~/deploy-permafrost.sh`, and the PC's `~/.ssh/permafrost-deploy` key plus `.deploy.local.json` (git-ignored) drive `npm run ship`. The first ship passed every check: the page and assets load through Cloudflare, `/ws` opens from the real origin, and other origins are refused.
+1. **v0.2 is done.** The repo went public on 2026-11-09. The VM runs `~/permafrost` with `~/deploy-permafrost.sh`, and the PC's `~/.ssh/permafrost-deploy` key plus `.deploy.local.json` (git-ignored) drive `npm run ship`. The first ship passed every check: the page and assets load through Cloudflare, `/ws` opens from the real origin, and other origins are refused. Nightly backups: `~/backup-permafrost.sh` runs from cron at 04:30 into `~/permafrost-backups` and keeps 14 days, set up by `deb-soft-haven` and the same as TPT's.
 2. **Public map width:** the server uses 240 (`PUBLIC_WIDTH` in `server/game.ts`). The user never confirmed the expected player count, so 240 and 4-week seasons are defaults. Season rollover isn't written yet: `worlds.season` stays at 1.
 3. **Next milestone:** v0.3, The living ice (see ROADMAP.md).
 
