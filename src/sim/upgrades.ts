@@ -1,6 +1,6 @@
 // Rig upgrade lines. Tier 0 is what a new rig has.
 
-export type UpgradeKey = 'drill' | 'hull' | 'engine' | 'tank' | 'cargo' | 'heater' | 'radiator';
+export type UpgradeKey = 'drill' | 'hull' | 'engine' | 'tank' | 'cargo' | 'heater' | 'radiator' | 'lamp';
 
 export interface Tier {
   name: string;
@@ -93,13 +93,20 @@ export const UPGRADES: Record<UpgradeKey, UpgradeLine> = {
       [0, 2000, 6000, 15000, 35000, 70000, 120000],
     ),
   },
+  lamp: {
+    key: 'lamp',
+    name: 'Headlamp',
+    blurb: 'Lights further into the dark. Deep caves are pitch black.',
+    format: (v) => `${v} tile reach`,
+    tiers: tiers(['Work Light', 'Halogen Bar', 'HID Beam', 'LED Array', 'Arc Lamp'], [4, 5.5, 7, 8.5, 10], [0, 300, 1200, 4000, 11000]),
+  },
 };
 
-export const UPGRADE_ORDER: UpgradeKey[] = ['drill', 'hull', 'engine', 'tank', 'cargo', 'heater', 'radiator'];
+export const UPGRADE_ORDER: UpgradeKey[] = ['drill', 'hull', 'engine', 'tank', 'cargo', 'heater', 'radiator', 'lamp'];
 
 export type Upgrades = Record<UpgradeKey, number>;
 
-export const newUpgrades = (): Upgrades => ({ drill: 0, hull: 0, engine: 0, tank: 0, cargo: 0, heater: 0, radiator: 0 });
+export const newUpgrades = (): Upgrades => ({ drill: 0, hull: 0, engine: 0, tank: 0, cargo: 0, heater: 0, radiator: 0, lamp: 0 });
 
 export function tierOf(u: Upgrades, key: UpgradeKey): Tier {
   const t = UPGRADES[key].tiers;

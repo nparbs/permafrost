@@ -2,6 +2,7 @@
 // NetSession (src/net/netSession.ts) predicts locally and follows the server.
 
 import { applyAction, type Action, type ActResult } from '../sim/actions';
+import { Environment } from '../sim/env';
 import type { ItemKey } from '../sim/items';
 import { newPlayer, type Player } from '../sim/player';
 import { STEP, noInput, step, type Input, type SimEvent } from '../sim/rig';
@@ -61,11 +62,15 @@ export class LocalSession implements GameSession {
   paint = 0;
   private acc = 0;
   private listeners: Listener[] = [];
+  private env: Environment;
 
   constructor(
     readonly world: World,
     readonly player: Player,
-  ) {}
+  ) {
+    this.env = new Environment(world);
+    world.time = Date.now() / 1000;
+  }
 
   static fresh(seed = (Math.random() * 2 ** 31) | 0): LocalSession {
     const world = new World(seed, SOLO_WIDTH);
@@ -82,10 +87,14 @@ export class LocalSession implements GameSession {
 
   update(dt: number): void {
     if (this.paused) return;
+    this.world.time = Date.now() / 1000;
     this.acc = Math.min(this.acc + dt, 0.25);
     const ev: SimEvent[] = [];
     while (this.acc >= STEP) {
       step(this.player, this.world, this.input, STEP, ev);
+      const out = this.env.step([this.player], STEP);
+      ev.push(...out.fx);
+      for (const [, e] of out.personal) ev.push(e);
       this.acc -= STEP;
     }
     this.emit(ev);
@@ -120,7 +129,9 @@ export class LocalSession implements GameSession {
 
   chat(): void {}
 
-  close(): void {}
+  close(): void {
+    this.env.detach();
+  }
 }
 
 export function useItem(s: GameSession, k: ItemKey): ActResult {

@@ -26,6 +26,9 @@ interface PeerState extends Peer {
   ty: number;
 }
 
+/** World and other players' events the server forwards that we show as they are. */
+const FX_PASS = new Set<SimEvent['t']>(['loose', 'fall', 'crash', 'thump', 'flood', 'pour', 'flare']);
+
 /** Past this many unanswered ticks (4 s) we stop predicting and wait for the server. */
 const MAX_UNACKED = 240;
 
@@ -53,6 +56,8 @@ export class NetSession implements GameSession {
   private acts = new Map<number, Action>();
   private offset = { x: 0, y: 0 };
   private closed = false;
+  /** Server clock minus ours, in ms. */
+  private clockSkew: number;
 
   constructor(
     private conn: Transport,
@@ -66,6 +71,8 @@ export class NetSession implements GameSession {
     this.paint = w.you.paint;
     this.token = w.token;
     this.count = w.online;
+    this.clockSkew = (w.now ?? Date.now()) - Date.now();
+    this.world.time = (Date.now() + this.clockSkew) / 1000;
     for (const p of w.peers) this.addPeer(p);
     conn.onMessage = (m) => this.onMessage(m);
     conn.onClose = (reason) => {
@@ -84,6 +91,7 @@ export class NetSession implements GameSession {
 
   update(dt: number): void {
     if (this.closed) return;
+    this.world.time = (Date.now() + this.clockSkew) / 1000;
     this.acc = Math.min(this.acc + dt, 0.25);
     const ev: SimEvent[] = [];
     while (this.acc >= STEP) {
@@ -193,6 +201,7 @@ export class NetSession implements GameSession {
       }
       case 'fx':
         if (m.e.t === 'blast') this.emit([{ t: 'peer-blast', x: m.e.x, y: m.e.y, r: m.e.r }]);
+        else if (FX_PASS.has(m.e.t)) this.emit([m.e]);
         break;
       case 'ev':
         this.emit(m.e);

@@ -42,6 +42,8 @@ export interface Rig {
   cold: boolean;
   /** Above the radiator's range: the hull takes damage. */
   hot: boolean;
+  /** In a steam vent's blast. */
+  scald: boolean;
 }
 
 export interface PlayerStats {
@@ -72,6 +74,8 @@ export interface Stats {
   cargo: number;
   minTemp: number;
   maxTemp: number;
+  /** Headlamp reach in tiles. */
+  lamp: number;
 }
 
 export function statsOf(p: Player): Stats {
@@ -84,6 +88,7 @@ export function statsOf(p: Player): Stats {
     cargo: tierOf(u, 'cargo').value,
     minTemp: tierOf(u, 'heater').value,
     maxTemp: tierOf(u, 'radiator').value,
+    lamp: tierOf(u, 'lamp').value,
   };
 }
 
@@ -108,7 +113,7 @@ export function newPlayer(world: World, name = 'Miner'): Player {
     items: newItems(),
     rig: {
       x: 0, y: 0, vx: 0, vy: 0, facing: 1, grounded: true, thrusting: false, drill: null,
-      fuel: 0, hull: 0, stalled: false, wrecked: false, cold: false, hot: false,
+      fuel: 0, hull: 0, stalled: false, wrecked: false, cold: false, hot: false, scald: false,
     },
     stats: { deepest: 0, earned: 0, trips: 0, dug: 0 },
     seen: [],

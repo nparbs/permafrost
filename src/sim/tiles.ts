@@ -14,6 +14,19 @@ export const T = {
   MAGMA: 10,
   WALL: 11,
   PAD: 12,
+  /** Thin new ice where a tunnel froze over. Thrusting up into it breaks it. */
+  RIME: 13,
+  /** A loose block of glacier ice. Falls if the space under it opens up. */
+  SLAB: 14,
+  /** Meltwater trapped in the glacier. Floods the tunnel below when dug. */
+  MELT: 15,
+  // Minerals take 16 to 47.
+  /** Standing meltwater. Slows the rig, then freezes into rime. */
+  WATER: 48,
+  /** A steam vent: blows scalding steam straight up every few seconds. */
+  VENT: 49,
+  /** Magma that flowed into a tunnel and cooled. Diggable. */
+  SLAG: 50,
 } as const;
 
 /** Minerals take ids MINERAL_BASE + index into MINERALS. */
@@ -109,12 +122,21 @@ def(T.GAS, 'Gas pocket', true, true, 1.5);
 def(T.MAGMA, 'Magma', true, false, 0);
 def(T.WALL, 'Bedrock wall', true, false, 0);
 def(T.PAD, 'Station pad', true, false, 0);
+def(T.RIME, 'Rime', true, true, 0.3);
+def(T.SLAB, 'Ice slab', true, true, 0.8);
+def(T.MELT, 'Meltwater pocket', true, true, 0.6);
+def(T.WATER, 'Meltwater', false, false, 0);
+def(T.VENT, 'Steam vent', true, false, 0);
+def(T.SLAG, 'Slag', true, true, 1.6);
 MINERALS.forEach((m, i) => def(MINERAL_BASE + i, m.name, true, true, m.hardness, i));
 
 export function tileDef(t: number): TileDef {
   return TILES[t] ?? WALL_DEF;
 }
 export const isSolid = (t: number) => tileDef(t).solid;
+export const isMineral = (t: number) => t >= MINERAL_BASE && t < MINERAL_BASE + MINERALS.length;
 export const isDiggable = (t: number) => tileDef(t).diggable;
 /** Tiles a thermal charge can clear. */
-export const isBlastable = (t: number) => t === T.BOULDER || isDiggable(t);
+export const isBlastable = (t: number) => t === T.BOULDER || t === T.VENT || isDiggable(t);
+/** Tiles that drop when nothing holds them up. */
+export const isLoose = (t: number) => t === T.BOULDER || t === T.SLAB;

@@ -10,6 +10,7 @@ import { cargoCount, cargoValue, statsOf } from '../sim/player';
 import { rigDepth, type Input } from '../sim/rig';
 import { FUEL_PRICE, buildingAt, refuelCost, repairCost, saleLines, towFee } from '../sim/station';
 import { tempAtDepth } from '../sim/temperature';
+import { ambientTemp, blizzardAt } from '../sim/weather';
 import { LAYERS, MINERALS } from '../sim/tiles';
 import { UPGRADES, UPGRADE_ORDER } from '../sim/upgrades';
 import { METERS_PER_TILE, type Building } from '../sim/world';
@@ -45,6 +46,7 @@ const ICONS: Record<ItemKey, string> = {
   charge: '<rect x="8" y="6" width="5" height="11" fill="#d03a2a"/><rect x="9" y="3" width="1" height="3" fill="#ccc"/><rect x="10" y="1" width="2" height="2" fill="#ffd040"/>',
   megacharge: '<rect x="4" y="7" width="4" height="10" fill="#d03a2a"/><rect x="8" y="6" width="4" height="11" fill="#e04a3a"/><rect x="12" y="7" width="4" height="10" fill="#d03a2a"/><rect x="4" y="11" width="12" height="2" fill="#333"/><rect x="10" y="3" width="1" height="3" fill="#ccc"/>',
   beacon: '<rect x="9" y="4" width="2" height="12" fill="#9ab"/><rect x="6" y="15" width="8" height="2" fill="#567"/><rect x="8" y="2" width="4" height="3" fill="#3ad0ff"/><rect x="4" y="5" width="2" height="1" fill="#3ad0ff"/><rect x="14" y="5" width="2" height="1" fill="#3ad0ff"/>',
+  flare: '<rect x="8" y="7" width="4" height="10" fill="#c83a2a"/><rect x="8" y="9" width="4" height="1" fill="#f0e0d0"/><rect x="8" y="5" width="4" height="2" fill="#ffd040"/><rect x="9" y="2" width="2" height="3" fill="#fff6c0"/><rect x="6" y="3" width="1" height="1" fill="#ffb030"/><rect x="13" y="4" width="1" height="1" fill="#ffb030"/>',
 };
 const icon = (k: ItemKey) => `<svg viewBox="0 0 20 20" width="20" height="20" shape-rendering="crispEdges">${ICONS[k]}</svg>`;
 
@@ -90,7 +92,6 @@ export class UI {
   private depth: HTMLElement;
   private temp: HTMLElement;
   private onlineEl: HTMLElement;
-  private shade: HTMLElement;
   private toasts: HTMLElement;
   private banner: HTMLElement;
   private prompt: HTMLButtonElement;
@@ -118,7 +119,6 @@ export class UI {
     private hooks: Hooks,
   ) {
     const r = this.root;
-    this.shade = r.appendChild(el('div', 'shade'));
     r.appendChild(el('div', 'frost'));
 
     const top = r.appendChild(el('div', 'hud-top'));
@@ -263,7 +263,15 @@ export class UI {
         'div',
         'help',
         `<p><kbd>←</kbd><kbd>→</kbd> drive and drill sideways · <kbd>↓</kbd> drill down · <kbd>↑</kbd> or <kbd>Space</kbd> thrust</p>
-         <p><kbd>E</kbd> enter a building · <kbd>1</kbd>–<kbd>5</kbd> items · <kbd>T</kbd> chat · <kbd>M</kbd> mute · <kbd>Esc</kbd> menu</p>`,
+         <p><kbd>E</kbd> enter a building · <kbd>1</kbd>–<kbd>6</kbd> items · <kbd>T</kbd> chat · <kbd>M</kbd> mute · <kbd>Esc</kbd> menu</p>`,
+      ),
+    );
+    box.appendChild(
+      el(
+        'div',
+        'help help-touch',
+        `<p><span>◀ ▶ drive and drill sideways</span> · <span>▼ drill down</span> · <span>▲ thrust</span></p>
+         <p><span>Park on a building and tap Enter</span> · <span>tap an item to use it</span></p>`,
       ),
     );
     box.appendChild(el('p', 'ver', `v${__APP_VERSION__}`));
@@ -295,7 +303,7 @@ export class UI {
     g.root.classList.toggle('warn', warn);
   }
 
-  frame(rig: { x: number; y: number; zoom: number }): void {
+  frame(): void {
     const p = this.s.player;
     const r = p.rig;
     const st = statsOf(p);
@@ -307,20 +315,16 @@ export class UI {
     this.setGauge(this.gauges.cargo, n / st.cargo, `${n} / ${st.cargo}`, n >= st.cargo);
     this.setText(this.cash, money(p.cash));
     this.setText(this.depth, d > 0.5 ? meters(d) : 'Surface');
-    const t = Math.round(tempAtDepth(Math.max(0, d)));
-    this.setText(this.temp, `${t}°C`);
+    const w = this.s.world;
+    const t = Math.round(ambientTemp(w, Math.max(0, d)));
+    const storm = d < 12 && blizzardAt(w.seed, w.time) > 0.2;
+    this.setText(this.temp, storm ? `${t}°C · Blizzard` : `${t}°C`);
     this.temp.className = `temp ${r.cold ? 'cold' : r.hot ? 'hot' : ''}`;
     this.temp.title = `Your rig works from ${st.minTemp}°C to ${st.maxTemp}°C`;
     this.setText(this.onlineEl, this.s.online ? `● ${this.s.onlineCount()} online` : 'Offline');
     this.root.classList.toggle('cold', r.cold);
     this.root.classList.toggle('hot', r.hot);
 
-    // Headlamp: the deeper you go, the darker it gets outside the rig's light.
-    const dark = Math.max(0, Math.min(0.94, (d - 2) / 30));
-    this.shade.style.opacity = dark.toFixed(2);
-    this.shade.style.setProperty('--lx', `${rig.x}px`);
-    this.shade.style.setProperty('--ly', `${rig.y}px`);
-    this.shade.style.setProperty('--lr', `${Math.round(5.5 * 16 * rig.zoom)}px`);
 
     for (const [k, b] of this.itemBtns) {
       const c = p.items[k] ?? 0;
@@ -332,7 +336,7 @@ export class UI {
     if (near !== this.nearBuilding) {
       this.nearBuilding = near;
       this.prompt.classList.toggle('show', !!near);
-      if (near) this.prompt.innerHTML = `<kbd>E</kbd> ${near.name}`;
+      if (near) this.prompt.innerHTML = `<kbd>E</kbd><b>Enter</b><span>${near.name}</span>`;
     }
 
     const layer = layerForDepth(d);
@@ -381,6 +385,7 @@ export class UI {
     if (!this.s?.online || this.titleOpen) return;
     this.s.releaseInput();
     this.chatBox.classList.remove('hidden');
+    this.chatInput.placeholder = this.root.classList.contains('touch-on') ? 'Say something' : 'Say something (Enter to send, Esc to cancel)';
     this.chatInput.value = '';
     this.chatInput.focus();
   }
@@ -614,7 +619,7 @@ export class UI {
     if (cost <= 0) box.appendChild(button('No damage', () => {}, 'wide', true));
     else if (p.cash >= cost) box.appendChild(button(`Repair · ${money(cost)}`, fix, 'primary wide'));
     else box.appendChild(button(p.cash > 0 ? `Repair ${money(p.cash)} worth` : 'No cash', fix, 'primary wide', p.cash <= 0));
-    box.appendChild(el('p', 'note', 'Falls, gas pockets, magma and heat all wear down the hull. At zero the rig is wrecked and towed home, and the cargo is lost.'));
+    box.appendChild(el('p', 'note', 'Falls, rockfalls, gas pockets, steam, magma and heat all wear down the hull. At zero the rig is wrecked and towed home, and the cargo is lost.'));
     box.appendChild(this.cashLine());
     return box;
   }
@@ -691,6 +696,10 @@ export class UI {
         this.sfx.setMuted(!this.sfx.muted);
         this.rerender();
       }, 'wide'));
+      box.appendChild(button(this.sfx.musicOn ? 'Music: on' : 'Music: off', () => {
+        this.sfx.setMusic(!this.sfx.musicOn);
+        this.rerender();
+      }, 'wide'));
       if (this.s.online && this.code) {
         const c = prettyCode(this.code);
         const row = box.appendChild(el('div', 'code-show'));
@@ -715,7 +724,7 @@ export class UI {
   }
 }
 
-function layerForDepth(d: number): number {
+export function layerForDepth(d: number): number {
   let i = 0;
   for (let k = 0; k < LAYERS.length; k++) if (d >= LAYERS[k].top) i = k;
   return i;

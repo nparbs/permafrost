@@ -1,5 +1,7 @@
 // Sound effects synthesised with Web Audio. Nothing is loaded from files.
 
+import { Music } from './music';
+
 export class Sfx {
   private ctx?: AudioContext;
   private master?: GainNode;
@@ -8,14 +10,31 @@ export class Sfx {
   private drillFilter?: BiquadFilterNode;
   private drillOsc?: OscillatorNode;
   private thrustGain?: GainNode;
+  private music?: Music;
   muted = false;
+  musicOn = true;
 
   constructor() {
     try {
       this.muted = localStorage.getItem('permafrost.muted') === '1';
+      this.musicOn = localStorage.getItem('permafrost.music') !== '0';
     } catch {
       /* storage blocked */
     }
+  }
+
+  setMusic(on: boolean): void {
+    this.musicOn = on;
+    try {
+      localStorage.setItem('permafrost.music', on ? '1' : '0');
+    } catch {
+      /* storage blocked */
+    }
+  }
+
+  /** Call every frame: which layer's music, and whether the game is being played. */
+  musicFrame(layer: number, playing: boolean): void {
+    this.music?.set(layer, playing && this.musicOn);
   }
 
   /** Browsers only allow audio after a user gesture. */
@@ -61,6 +80,8 @@ export class Sfx {
     this.thrustGain = ctx.createGain();
     this.thrustGain.gain.value = 0;
     t.connect(lp).connect(this.thrustGain).connect(this.master);
+
+    this.music = new Music(ctx, this.master);
   }
 
   setMuted(m: boolean): void {
@@ -171,5 +192,34 @@ export class Sfx {
 
   dug(): void {
     this.burst(0.06, 1200, 0.06, 'bandpass');
+  }
+
+  /** A loose block grinding against the ice. */
+  creak(): void {
+    this.tone(140, 0.35, 'sawtooth', 0.05, 0, -50);
+    this.tone(190, 0.25, 'sawtooth', 0.035, 0.12, -70);
+  }
+
+  rumble(): void {
+    this.burst(0.5, 300, 0.25);
+  }
+
+  splash(): void {
+    this.burst(0.45, 2400, 0.22, 'bandpass');
+    this.tone(320, 0.2, 'sine', 0.08, 0.05, -180);
+  }
+
+  hiss(): void {
+    this.burst(0.6, 5000, 0.12, 'highpass');
+  }
+
+  fizz(): void {
+    this.burst(0.3, 3500, 0.15, 'highpass');
+    this.tone(1200, 0.1, 'square', 0.04);
+  }
+
+  crunch(): void {
+    this.burst(0.08, 2600, 0.1, 'bandpass');
+    this.tone(1500, 0.04, 'square', 0.03);
   }
 }

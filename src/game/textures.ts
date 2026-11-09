@@ -2,18 +2,31 @@
 
 import type Phaser from 'phaser';
 import { hash3, valueNoise } from '../sim/rng';
-import { LAYERS, MINERALS, MINERAL_BASE, T, isSolid } from '../sim/tiles';
+import { LAYERS, MINERALS, MINERAL_BASE, T, isMineral, isSolid } from '../sim/tiles';
 import { SKY, type BuildingKey, type World } from '../sim/world';
 
 export const TS = 16;
-const COLS = 16;
+const COLS = 64;
 /** Tunnel backs: BACK_BASE + layer * 4 + (solid above ? 1 : 0) + (solid left ? 2 : 0). */
 export const BACK_BASE = 64;
 /** Things set into the ground: EMB_BASE + kind * 8 + layer. */
 export const EMB_BASE = 96;
 const EMB_GAS = MINERALS.length;
 const EMB_BOULDER = MINERALS.length + 1;
-const TILE_COUNT = EMB_BASE + (MINERALS.length + 2) * 8;
+/** Tiles with ids past the minerals: EXTRA_BASE + (vent 0-3, slag 4-7, water 8 + layer * 2 + (surface ? 0 : 1)). */
+const EXTRA_BASE = EMB_BASE + (MINERALS.length + 2) * 8;
+const TILE_COUNT = EXTRA_BASE + 8 + LAYERS.length * 2;
+/**
+ * Rounded tunnel edges use a second grid, offset by half a tile, so each cell sits on a tile corner
+ * and sees the four tiles that meet there: OVER_BASE + layer * 32 + (top two are sky ? 16 : 0) + open,
+ * where open has 1 top-left, 2 top-right, 4 bottom-left, 8 bottom-right.
+ */
+export const OVER_BASE = Math.ceil(TILE_COUNT / COLS) * COLS;
+const OVER_COUNT = LAYERS.length * 32;
+/** Overlay frames that come out empty, so the grid can leave them blank. */
+const OVER_EMPTY = new Uint8Array(OVER_COUNT);
+/** Corner radius of dug edges, in pixels. Keep it at or under TS / 2 - 2. */
+const CORNER = 6;
 
 type RGB = [number, number, number];
 
@@ -48,8 +61,13 @@ export const LAYER_PAL: Pal[] = [
 
 /** The colour of debris for a tile, for particles. */
 export function debrisColor(world: World, x: number, y: number, tile: number): number {
-  if (tile >= MINERAL_BASE) return rgbNum(hex(MINERALS[tile - MINERAL_BASE].color));
+  if (isMineral(tile)) return rgbNum(hex(MINERALS[tile - MINERAL_BASE].color));
   if (tile === T.MAGMA) return 0xff7a20;
+  if (tile === T.RIME) return 0xdff2ff;
+  if (tile === T.SLAB) return 0x9fd4f2;
+  if (tile === T.MELT || tile === T.WATER) return 0x4a9ae0;
+  if (tile === T.SLAG) return 0x3a3236;
+  if (tile === T.VENT) return 0x8a8a90;
   return rgbNum(LAYER_PAL[world.layerAt(x, y)].base);
 }
 
@@ -184,6 +202,98 @@ function paintPad(px: Px, ox: number, oy: number, v: number) {
   }
 }
 
+function paintRime(px: Px, ox: number, oy: number, v: number) {
+  const a = hex('#8fc6e6');
+  const b = hex('#d6eefc');
+  for (let y = 0; y < TS; y++) {
+    for (let x = 0; x < TS; x++) {
+      const m = valueNoise((x + v * 16) / 3, y / 3, 1101);
+      let c = mix(a, b, m);
+      // feathery frost ferns
+      if ((x * 3 + y * 2 + v * 5) % 9 === 0 && hash3(x + v * 16, y, 1102) > 0.35) c = hex('#ffffff');
+      if (hash3(x + v * 16, y, 1103) > 0.93) c = shade(a, -0.15);
+      px.set(ox + x, oy + y, c);
+    }
+  }
+}
+
+function paintSlab(px: Px, ox: number, oy: number, v: number) {
+  const p = LAYER_PAL[2];
+  const edge = shade(p.dark, -0.35);
+  for (let y = 0; y < TS; y++) {
+    for (let x = 0; x < TS; x++) {
+      const m = valueNoise((x + v * 16) / 5, y / 5, 1201);
+      let c = mix(mix(p.base, p.light, 0.35), p.light, m * 0.4);
+      if ((x + y + v) % 7 === 0) c = mix(c, hex('#ffffff'), 0.4);
+      // a cracked outline so a loose block reads at a glance
+      if (x === 0 || y === 0 || x === TS - 1 || y === TS - 1) c = edge;
+      else if (x === 1 || y === 1) c = mix(c, hex('#ffffff'), 0.5);
+      px.set(ox + x, oy + y, c);
+    }
+  }
+  const cx = 4 + v * 2;
+  for (let k = 0; k < 6; k++) px.set(ox + cx + (k >> 1), oy + 2 + k, edge);
+}
+
+function paintMelt(px: Px, ox: number, oy: number, v: number) {
+  paintLayer(px, ox, oy, 2, v);
+  const deep = hex('#1d5a9e');
+  const mid = hex('#2f7dcc');
+  const hi = hex('#bfe6ff');
+  for (let y = 0; y < TS; y++) {
+    for (let x = 0; x < TS; x++) {
+      const r = Math.hypot((x - 7.5) / 1.15, y - 8.5);
+      if (r > 5.6) continue;
+      let c = r > 4.6 ? shade(deep, -0.3) : y < 7 + Math.sin((x + v) * 1.3) * 0.8 ? mid : deep;
+      if (y === 6 && (x + v) % 4 === 0) c = hi;
+      px.set(ox + x, oy + y, c);
+    }
+  }
+  px.set(ox + 5, oy + 9, hi);
+  px.set(ox + 6, oy + 10, hi);
+}
+
+function paintVent(px: Px, ox: number, oy: number, v: number) {
+  paintLayer(px, ox, oy, 5, v);
+  const glow = hex('#ff8a30');
+  for (let y = 0; y < 7; y++) {
+    for (let x = 0; x < TS; x++) {
+      const r = Math.hypot(x - 7.5, (y + 1) * 1.6);
+      if (r < 3.4) px.set(ox + x, oy + y, hex('#120c0c'));
+      else if (r < 4.6) px.set(ox + x, oy + y, mix(glow, hex('#3b3236'), 0.35));
+      else if (r < 5.8) px.set(ox + x, oy + y, hex('#6a6a73'));
+    }
+  }
+  for (const [x, y] of [[4, 9], [11, 10], [7, 12]]) px.set(ox + x, oy + y, mix(glow, hex('#262024'), 0.5));
+}
+
+function paintSlag(px: Px, ox: number, oy: number, v: number) {
+  const a = hex('#2b2427');
+  const b = hex('#463c40');
+  for (let y = 0; y < TS; y++) {
+    for (let x = 0; x < TS; x++) {
+      const m = valueNoise((x + v * 16) / 3, y / 3, 1301);
+      let c = mix(a, b, m);
+      const crack = valueNoise((x + v * 16) / 2.5, y / 2.5, 1302);
+      if (Math.abs(crack - 0.5) < 0.035) c = hex('#a8401a');
+      px.set(ox + x, oy + y, c);
+    }
+  }
+}
+
+function paintWater(px: Px, ox: number, oy: number, layer: number, surface: boolean) {
+  paintBack(px, ox, oy, layer, false, false);
+  const blue = hex('#2f7dcc');
+  for (let y = 0; y < TS; y++) {
+    for (let x = 0; x < TS; x++) {
+      let c = mix(px.get(ox + x, oy + y), blue, 0.6);
+      if (surface && y < 2) c = mix(hex('#9fd8ff'), blue, y * 0.4);
+      else if ((x * 2 + y * 3) % 13 === 0) c = mix(c, hex('#9fd8ff'), 0.35);
+      px.set(ox + x, oy + y, c);
+    }
+  }
+}
+
 function paintBack(px: Px, ox: number, oy: number, layer: number, above: boolean, left: boolean) {
   const p = LAYER_PAL[layer];
   for (let y = 0; y < TS; y++) {
@@ -219,6 +329,29 @@ function crystal(px: Px, cx: number, cy: number, col: RGB, light: RGB) {
   px.set(cx - 1, cy - 1, light);
 }
 
+function paintBoulder(px: Px, ox: number, oy: number, layer: number) {
+  const base = mix(hex('#7a7470'), LAYER_PAL[layer].base, 0.25);
+  const dark = shade(base, -0.5);
+  for (let y = 0; y < TS; y++) for (let x = 0; x < TS; x++) {
+    const dx = x - 7.5;
+    const dy = y - 8;
+    const r = Math.sqrt(dx * dx * 1.0 + dy * dy * 1.15);
+    if (r > 7.2) continue;
+    let c = mix(base, shade(base, 0.35), Math.max(0, (-dx - dy) / 12));
+    if (r > 6.3) c = dark;
+    else if (hash3(x, y, 808) > 0.9) c = shade(base, -0.2);
+    px.set(ox + x, oy + y, c);
+  }
+  for (const [x, y] of [[9, 5], [10, 6], [10, 7], [6, 10], [7, 11]]) px.set(ox + x, oy + y, dark);
+}
+
+/** Loose boulders on their own, one per layer, for falling sprites. */
+function buildBoulders(): HTMLCanvasElement {
+  const px = new Px(TS * LAYERS.length, TS);
+  for (let l = 0; l < LAYERS.length; l++) paintBoulder(px, l * TS, 0, l);
+  return toCanvas(px);
+}
+
 function paintEmbedded(px: Px, ox: number, oy: number, kind: number, layer: number) {
   paintLayer(px, ox, oy, layer, 1);
   if (kind === EMB_GAS) {
@@ -231,19 +364,7 @@ function paintEmbedded(px: Px, ox: number, oy: number, kind: number, layer: numb
     return;
   }
   if (kind === EMB_BOULDER) {
-    const base = mix(hex('#7a7470'), LAYER_PAL[layer].base, 0.25);
-    const dark = shade(base, -0.5);
-    for (let y = 0; y < TS; y++) for (let x = 0; x < TS; x++) {
-      const dx = x - 7.5;
-      const dy = y - 8;
-      const r = Math.sqrt(dx * dx * 1.0 + dy * dy * 1.15);
-      if (r > 7.2) continue;
-      let c = mix(base, shade(base, 0.35), Math.max(0, (-dx - dy) / 12));
-      if (r > 6.3) c = dark;
-      else if (hash3(x, y, 808) > 0.9) c = shade(base, -0.2);
-      px.set(ox + x, oy + y, c);
-    }
-    for (const [x, y] of [[9, 5], [10, 6], [10, 7], [6, 10], [7, 11]]) px.set(ox + x, oy + y, dark);
+    paintBoulder(px, ox, oy, layer);
     return;
   }
   const m = MINERALS[kind];
@@ -283,8 +404,78 @@ function paintEmbedded(px: Px, ox: number, oy: number, kind: number, layer: numb
   }
 }
 
+/**
+ * One overlay cell: the rounded boundary where four tiles meet at the cell's centre. Open corners
+ * of rock get cut away to show tunnel, closed corners of tunnel get filled in with rock, and a dark
+ * rim runs along the edge. Sky cells count as open for the shape but never get a rim.
+ * Returns false if nothing was drawn.
+ */
+function paintOver(px: Px, dst: [number, number], ground: [number, number], back: [number, number], layer: number, open: number, sky: number): boolean {
+  const H = TS / 2;
+  const M = 2;
+  const N = TS + M * 2;
+  const bit = (qx: number, qy: number) => 1 << (qy * 2 + qx);
+  // 0 rock, 1 tunnel, 2 sky.
+  const state = new Uint8Array(N * N);
+  const changed = new Uint8Array(N * N);
+  for (let v = -M; v < TS + M; v++) {
+    for (let u = -M; u < TS + M; u++) {
+      const qx = u < H ? 0 : 1;
+      const qy = v < H ? 0 : 1;
+      const me = bit(qx, qy);
+      const side = bit(1 - qx, qy);
+      const vert = bit(qx, 1 - qy);
+      const diag = bit(1 - qx, 1 - qy);
+      const isOpen = (b: number) => (open & b) > 0;
+      let st = sky & me ? 2 : isOpen(me) ? 1 : 0;
+      const dx = Math.abs(u + 0.5 - H);
+      const dy = Math.abs(v + 0.5 - H);
+      if (dx < CORNER && dy < CORNER && Math.hypot(CORNER - dx, CORNER - dy) > CORNER) {
+        if (st === 1 && !isOpen(side) && !isOpen(vert)) st = 0; // tunnel corner filled with rock
+        else if (st === 0 && isOpen(side) && isOpen(vert) && isOpen(diag)) st = 1; // rock corner cut away
+        if (st !== (sky & me ? 2 : isOpen(me) ? 1 : 0)) changed[(v + M) * N + u + M] = 1;
+      }
+      state[(v + M) * N + u + M] = st;
+    }
+  }
+  const p = LAYER_PAL[layer];
+  const rim = shade(p.dark, -0.45);
+  let drew = false;
+  for (let v = 0; v < TS; v++) {
+    for (let u = 0; u < TS; u++) {
+      const k = (v + M) * N + u + M;
+      const tx = (u + H) % TS;
+      const ty = (v + H) % TS;
+      const x = dst[0] + u;
+      const y = dst[1] + v;
+      if (state[k] === 1) {
+        if (changed[k]) {
+          px.set(x, y, shade(px.get(back[0] + tx, back[1] + ty), -0.06));
+          drew = true;
+        }
+        continue;
+      }
+      if (state[k] === 2) continue;
+      let d = 9;
+      for (let j = -M; j <= M; j++) for (let i = -M; i <= M; i++) {
+        if (state[(v + M + j) * N + u + M + i] === 1) d = Math.min(d, Math.hypot(i, j));
+      }
+      const fill = changed[k] > 0;
+      const base = px.get(ground[0] + tx, ground[1] + ty);
+      if (d < 1.5) px.set(x, y, rim);
+      else if (d < 2.5) {
+        if (fill) px.set(x, y, mix(base, rim, 0.45));
+        else px.set(x, y, [0, 0, 0], 70);
+      } else if (fill) px.set(x, y, base);
+      else continue;
+      drew = true;
+    }
+  }
+  return drew;
+}
+
 function buildTileset(): HTMLCanvasElement {
-  const rows = Math.ceil(TILE_COUNT / COLS);
+  const rows = Math.ceil((OVER_BASE + OVER_COUNT) / COLS);
   const px = new Px(COLS * TS, rows * TS);
   const at = (i: number): [number, number] => [(i % COLS) * TS, Math.floor(i / COLS) * TS];
   for (let v = 0; v < 4; v++) {
@@ -295,10 +486,23 @@ function buildTileset(): HTMLCanvasElement {
     paintMagma(px, ...at(T.MAGMA * 4 + v), v);
     paintWall(px, ...at(T.WALL * 4 + v), v);
     paintPad(px, ...at(T.PAD * 4 + v), v);
+    paintRime(px, ...at(T.RIME * 4 + v), v);
+    paintSlab(px, ...at(T.SLAB * 4 + v), v);
+    paintMelt(px, ...at(T.MELT * 4 + v), v);
+    paintVent(px, ...at(EXTRA_BASE + v), v);
+    paintSlag(px, ...at(EXTRA_BASE + 4 + v), v);
   }
   for (let layer = 0; layer < LAYERS.length; layer++) {
     for (let f = 0; f < 4; f++) paintBack(px, ...at(BACK_BASE + layer * 4 + f), layer, (f & 1) > 0, (f & 2) > 0);
     for (let k = 0; k < MINERALS.length + 2; k++) paintEmbedded(px, ...at(EMB_BASE + k * 8 + layer), k, layer);
+    paintWater(px, ...at(EXTRA_BASE + 8 + layer * 2), layer, true);
+    paintWater(px, ...at(EXTRA_BASE + 8 + layer * 2 + 1), layer, false);
+  }
+  for (let layer = 0; layer < LAYERS.length; layer++) {
+    for (let f = 0; f < 32; f++) {
+      const i = layer * 32 + f;
+      OVER_EMPTY[i] = paintOver(px, at(OVER_BASE + i), at(LAYERS[layer].tile * 4), at(BACK_BASE + layer * 4), layer, f & 15, f & 16 ? 3 : 0) ? 0 : 1;
+    }
   }
   return toCanvas(px);
 }
@@ -320,10 +524,32 @@ export function visIndex(world: World, x: number, y: number): number {
     const left = isSolid(world.get(x - 1, y)) ? 2 : 0;
     return BACK_BASE + world.layerAt(x, y) * 4 + above + left;
   }
-  if (t >= MINERAL_BASE) return EMB_BASE + (t - MINERAL_BASE) * 8 + world.layerAt(x, y);
+  if (isMineral(t)) return EMB_BASE + (t - MINERAL_BASE) * 8 + world.layerAt(x, y);
+  const v = Math.floor(hash3(x, y, 12) * 4);
+  if (t === T.VENT) return EXTRA_BASE + v;
+  if (t === T.SLAG) return EXTRA_BASE + 4 + v;
+  if (t === T.WATER) return EXTRA_BASE + 8 + world.layerAt(x, y) * 2 + (world.get(x, y - 1) === T.WATER ? 1 : 0);
   if (t === T.GAS) return EMB_BASE + EMB_GAS * 8 + world.layerAt(x, y);
   if (t === T.BOULDER) return EMB_BASE + EMB_BOULDER * 8 + world.layerAt(x, y);
-  return t * 4 + Math.floor(hash3(x, y, 12) * 4);
+  return t * 4 + v;
+}
+
+/**
+ * The overlay frame for the corner at the top-left of tile (i, j), where tiles (i-1, j-1), (i, j-1),
+ * (i-1, j) and (i, j) meet, or -1 if nothing needs drawing there.
+ */
+export function overIndex(world: World, i: number, j: number): number {
+  if (j < SKY) return -1;
+  const cells: [number, number][] = [[i - 1, j - 1], [i, j - 1], [i - 1, j], [i, j]];
+  let open = 0;
+  let layer = -1;
+  cells.forEach(([x, y], k) => {
+    if (y < SKY || !isSolid(world.get(x, y))) open |= 1 << k;
+    else if (layer < 0) layer = world.layerAt(x, y);
+  });
+  if (open === 15 || layer < 0) return -1;
+  const f = layer * 32 + (j === SKY ? 16 : 0) + open;
+  return OVER_EMPTY[f] ? -1 : OVER_BASE + f;
 }
 
 // ---------------------------------------------------------------- rig
@@ -605,6 +831,58 @@ function buildMountains(): HTMLCanvasElement {
   return toCanvas(px);
 }
 
+/** A soft round light, white in the middle and fading to nothing, for erasing darkness. */
+function buildLight(): HTMLCanvasElement {
+  const c = document.createElement('canvas');
+  c.width = c.height = 128;
+  const g = c.getContext('2d')!;
+  const grad = g.createRadialGradient(64, 64, 0, 64, 64, 64);
+  grad.addColorStop(0, 'rgba(255,255,255,1)');
+  grad.addColorStop(0.45, 'rgba(255,255,255,0.85)');
+  grad.addColorStop(0.8, 'rgba(255,255,255,0.25)');
+  grad.addColorStop(1, 'rgba(255,255,255,0)');
+  g.fillStyle = grad;
+  g.fillRect(0, 0, 128, 128);
+  return c;
+}
+
+/** A flare stick, 4x6. */
+function buildFlare(): HTMLCanvasElement {
+  const px = new Px(4, 6);
+  px.rect(1, 2, 2, 4, hex('#c83a2a'));
+  px.rect(1, 1, 2, 1, hex('#ffd040'));
+  px.rect(1, 0, 2, 1, hex('#fffbe0'));
+  return toCanvas(px);
+}
+
+/** A soft puff for steam and blizzard fog. */
+function buildPuff(): HTMLCanvasElement {
+  const c = document.createElement('canvas');
+  c.width = c.height = 8;
+  const g = c.getContext('2d')!;
+  const grad = g.createRadialGradient(4, 4, 0, 4, 4, 4);
+  grad.addColorStop(0, 'rgba(255,255,255,0.9)');
+  grad.addColorStop(1, 'rgba(255,255,255,0)');
+  g.fillStyle = grad;
+  g.fillRect(0, 0, 8, 8);
+  return c;
+}
+
+/** The tileset frame for a tile index, registered on first use, for sprites that look like tiles. */
+export function tileFrame(scene: Phaser.Scene, index: number): string {
+  const tex = scene.textures.get('tiles');
+  const name = `t${index}`;
+  if (!tex.has(name)) tex.add(name, 0, (index % COLS) * TS, Math.floor(index / COLS) * TS, TS, TS);
+  return name;
+}
+
+/** The plain frame a tile would show at (x, y), ignoring what's there now. */
+export function frameFor(world: World, x: number, y: number, tile: number): number {
+  if (isMineral(tile)) return EMB_BASE + (tile - MINERAL_BASE) * 8 + world.layerAt(x, y);
+  if (tile === T.BOULDER) return EMB_BASE + EMB_BOULDER * 8 + world.layerAt(x, y);
+  return tile * 4;
+}
+
 function buildDot(size: number, color = '#ffffff'): HTMLCanvasElement {
   const c = document.createElement('canvas');
   c.width = size;
@@ -636,4 +914,9 @@ export function makeTextures(scene: Phaser.Scene): void {
   tx.addCanvas('mountains', buildMountains());
   tx.addCanvas('px', buildDot(2));
   tx.addCanvas('px1', buildDot(1));
+  tx.addCanvas('light', buildLight());
+  tx.addCanvas('flare', buildFlare());
+  tx.addCanvas('puff', buildPuff());
+  const boulders = tx.addCanvas('boulders', buildBoulders())!;
+  for (let l = 0; l < LAYERS.length; l++) boulders.add(`b${l}`, 0, l * TS, 0, TS, TS);
 }

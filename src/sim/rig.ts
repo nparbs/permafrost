@@ -3,8 +3,8 @@
 
 import { ITEMS, type ItemKey } from './items';
 import { RIG_H, RIG_W, cargoCount, placeRig, statsOf, type DrillDir, type Player, type Rig } from './player';
-import { tempAtDepth } from './temperature';
 import { MINERALS, T, isBlastable, isDiggable, isSolid, tileDef } from './tiles';
+import { BLIZZARD, STEAM, ambientTemp, blizzardAt, steamAt, windDir } from './weather';
 import { SKY, type World } from './world';
 
 export const STEP = 1 / 60;
@@ -50,7 +50,7 @@ export interface Input {
 
 export const noInput = (): Input => ({ left: false, right: false, up: false, down: false });
 
-export type HurtCause = 'fall' | 'gas' | 'magma' | 'heat';
+export type HurtCause = 'fall' | 'gas' | 'magma' | 'heat' | 'rock' | 'steam';
 
 export type SimEvent =
   | { t: 'dig-start'; x: number; y: number; tile: number }
@@ -60,6 +60,19 @@ export type SimEvent =
   | { t: 'hurt'; amount: number; cause: HurtCause }
   | { t: 'land'; speed: number }
   | { t: 'blast'; x: number; y: number; r: number; cause: 'gas' | 'charge' }
+  /** A loose boulder or slab shakes: it drops in a moment. */
+  | { t: 'loose'; x: number; y: number }
+  /** It drops. */
+  | { t: 'fall'; x: number; y: number; tile: number }
+  /** A falling tile broke apart on a rig, or had nowhere to land. */
+  | { t: 'crash'; x: number; y: number; tile: number }
+  /** A falling tile landed hard. */
+  | { t: 'thump'; x: number; y: number }
+  /** Meltwater burst out at (x, y). */
+  | { t: 'flood'; x: number; y: number }
+  /** Magma started to pour into a tunnel. */
+  | { t: 'pour'; x: number; y: number }
+  | { t: 'flare'; x: number; y: number }
   | { t: 'item'; item: ItemKey }
   | { t: 'stalled' }
   | { t: 'wrecked'; cause: HurtCause };
@@ -69,7 +82,7 @@ const EPS = 1e-6;
 /** Depth in tiles of the rig's underside below the surface. */
 export const rigDepth = (r: Rig) => r.y + RIG_H / 2 - SKY;
 
-function hurt(p: Player, amount: number, cause: HurtCause, ev: SimEvent[], announce: boolean): void {
+export function hurt(p: Player, amount: number, cause: HurtCause, ev: SimEvent[], announce: boolean): void {
   const r = p.rig;
   if (r.wrecked || amount <= 0) return;
   r.hull = Math.max(0, r.hull - amount);
@@ -108,7 +121,7 @@ function moveX(r: Rig, world: World, dx: number): void {
 }
 
 /** Returns the impact speed when the rig lands this step, else 0. */
-function moveY(r: Rig, world: World, dy: number): number {
+function moveY(r: Rig, world: World, dy: number, ev: SimEvent[]): number {
   let impact = 0;
   if (dy !== 0) {
     r.y += dy;
@@ -123,6 +136,14 @@ function moveY(r: Rig, world: World, dy: number): number {
         impact = r.vy;
       } else {
         r.y = o.y0 + 1 + RIG_H / 2;
+        // Rime is thin: thrusting into it from below cracks it open, so a refrozen shaft never traps you.
+        if (r.thrusting) {
+          for (let tx = o.x0; tx <= o.x1; tx++) {
+            if (world.get(tx, o.y0) !== T.RIME) continue;
+            world.set(tx, o.y0, T.AIR);
+            ev.push({ t: 'dug', x: tx, y: o.y0, tile: T.RIME });
+          }
+        }
       }
       r.vy = 0;
     }
@@ -137,6 +158,10 @@ function solidUnder(world: World, r: Rig): boolean {
   const x1 = Math.floor(r.x + RIG_W / 2 - EPS);
   for (let tx = x0; tx <= x1; tx++) if (isSolid(world.get(tx, ty))) return true;
   return false;
+}
+
+function inWater(world: World, r: Rig): boolean {
+  return world.get(Math.floor(r.x), Math.floor(r.y)) === T.WATER;
 }
 
 function touching(world: World, r: Rig, tile: number): boolean {
@@ -220,7 +245,7 @@ export function step(p: Player, world: World, input: Input, dt: number, ev: SimE
   const underground = depth > 0.05;
   if (depth > p.stats.deepest) p.stats.deepest = depth;
 
-  const temp = tempAtDepth(depth);
+  const temp = ambientTemp(world, depth);
   const cold = Math.max(0, s.minTemp - temp);
   const hot = Math.max(0, temp - s.maxTemp);
   r.cold = cold > 0;
@@ -228,6 +253,8 @@ export function step(p: Player, world: World, input: Input, dt: number, ev: SimE
   const burnMul = 1 + cold * HAZARD.coldBurn;
   if (hot > 0) hurt(p, hot * HAZARD.heat * dt, 'heat', ev, false);
   if (touching(world, r, T.MAGMA)) hurt(p, HAZARD.magma * dt, 'magma', ev, false);
+  r.scald = steamAt(world, Math.floor(r.x), Math.floor(r.y));
+  if (r.scald) hurt(p, STEAM.burn * dt, 'steam', ev, false);
   if (r.wrecked) return;
 
   if (r.drill) {
@@ -297,15 +324,26 @@ export function step(p: Player, world: World, input: Input, dt: number, ev: SimE
   }
   r.vy = Math.min(r.vy, PHYS.terminal);
 
+  if (r.scald) r.vy -= STEAM.lift * dt;
+  const above = !underground && r.y + RIG_H / 2 < SKY - 0.05;
+  const storm = above ? blizzardAt(world.seed, world.time) : 0;
+  if (storm > 0 && !r.grounded) r.vx += windDir(world.seed, world.time) * BLIZZARD.wind * storm * dt;
+  if (inWater(world, r)) {
+    // Meltwater drags at the rig and breaks a fall.
+    const drag = Math.exp(-4 * dt);
+    r.vx *= drag;
+    if (r.vy > 2.5) r.vy = Math.max(2.5, r.vy * drag);
+  }
+
   moveX(r, world, r.vx * dt);
-  const impact = moveY(r, world, r.vy * dt);
+  const impact = moveY(r, world, r.vy * dt, ev);
   if (impact > 4) ev.push({ t: 'land', speed: impact });
   if (impact > PHYS.fallSafe) hurt(p, (impact - PHYS.fallSafe) * PHYS.fallDamage, 'fall', ev, true);
 
   if (underground || r.thrusting) {
     let burn = underground ? BURN.idle : 0;
     if (Math.abs(r.vx) > 0.2 || !r.grounded) burn += BURN.move;
-    if (r.thrusting) burn += BURN.thrust;
+    if (r.thrusting) burn += BURN.thrust * (1 + storm * BLIZZARD.flyBurn);
     r.fuel = Math.max(0, r.fuel - burn * burnMul * dt);
   }
 }
@@ -329,6 +367,9 @@ export function useItem(p: Player, world: World, key: ItemKey, ev: SimEvent[]): 
     case 'megacharge':
       if (r.drill || rigDepth(r) < 0.5) return false;
       blast(world, Math.floor(r.x), Math.floor(r.y), key === 'charge' ? 1 : 2, ev, 'charge');
+      break;
+    case 'flare':
+      ev.push({ t: 'flare', x: r.x, y: r.y });
       break;
     case 'beacon': {
       if (rigDepth(r) < 0.5) return false;

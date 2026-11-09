@@ -66,16 +66,18 @@ The finale: plant charges on the Hearth's heat vents while it pulses freezing wa
 - [x] A wider public map (240 tiles)
 - [x] Rate limits, origin checks, and input checks on the server, plus a cap on how fast a client can run
 - [x] Offline single player keeps working
+- [x] Phone polish (2026-11-09, not shipped yet): no keyboard hints on touch screens, a big Enter button right above thrust when parked at a building, and a title screen that fits 640x360
 
-## v0.3: The living ice
+## v0.3: The living ice (built 2026-11-09, not shipped yet)
 
-- [ ] Refreeze: tunnels in the snow, firn and glacier frost over during the season, and some ore grows back in refrozen ice
-- [ ] Loose boulders and ice slabs fall when the tile under them is dug
-- [ ] Headlamp upgrade line and flares; deep caves are pitch black without them
-- [ ] Blizzards at the surface: the temperature drops, you can see less, and flying costs more
-- [ ] Meltwater pockets that flood a tunnel and freeze it shut again
-- [ ] Steam vents and magma flows in the Geothermal Zone
-- [ ] Music: an ambient track for each layer, all synthesized
+- [x] Rounded tunnels: dug edges and corners are drawn round on a second tile grid offset by half a tile, and the drill carves a round bite as it goes
+- [x] Refreeze: tunnels in the snow, firn and glacier frost over into thin rime (8, 12 and 18 minutes), never near a rig. Thrusting up into rime breaks it, so a refrozen shaft can't trap anyone. Some ore grows back, but only where it has solid ground under it, so it never caps a shaft
+- [x] Loose boulders and ice slabs shake, then fall when the space under them or beside them opens up. Slabs hang over the ice caverns. A falling one that lands on a rig hurts it and breaks
+- [x] Headlamp upgrade line (5 tiers) and flares (item 6, seen by other miners too). It gets darker with depth and is pitch black by the bedrock; magma and vents glow
+- [x] Blizzards at the surface on a shared clock (about 3 in 10 seven-minute slots): 25°C colder, a whiteout, wind, and flying burns 60% more fuel
+- [x] Meltwater pockets in the glacier flood the lowest tunnel tiles nearby, slow the rig, and freeze into rime after about 7 seconds (never around a rig)
+- [x] Steam vents in the Geothermal Zone blow every 6 seconds, scalding and lifting anything above them. Magma pours into a tunnel opened beside it, runs up to 3 tiles, and cools into diggable slag after 30 seconds
+- [x] Music: an ambient mood for each layer, all synthesized, with a Music on/off switch in the menu
 
 ## v0.4: Friendly rivalry
 

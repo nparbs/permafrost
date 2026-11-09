@@ -115,6 +115,141 @@ if (want('phone')) {
   }
 }
 
+if (want('dig')) {
+  // Tunnels of every shape, to check the rounded edges, then a dig in progress.
+  const page = await open({ width: 1280, height: 720 });
+  page.on('dialog', (d) => d.accept());
+  await page.getByText(/offline game|Play offline/).click();
+  await wait(page, 500);
+  for (const [d, name] of [[3, 'snow'], [70, 'glacier'], [180, 'permafrost'], [420, 'geothermal']]) {
+    await page.evaluate((d) => {
+      const s = window.pf.session;
+      const w = s.world;
+      const x = Math.floor(w.w * 0.25);
+      const y = 10 + d;
+      const dig = (xx, yy) => w.set(xx, yy, 0);
+      for (let i = -6; i <= 6; i++) dig(x + i, y); // corridor
+      for (let j = 1; j <= 5; j++) dig(x - 6, y - j); // shaft up
+      for (let j = 1; j <= 4; j++) dig(x + 6, y + j); // shaft down
+      dig(x + 7, y + 4); dig(x + 8, y + 4); // dog-leg
+      dig(x - 2, y - 2); dig(x + 2, y + 2); // lone pockets
+      for (let j = 1; j <= 3; j++) for (let i = 1; i <= 3; i++) dig(x + i - 1, y - j - 1); // room
+      const r = s.player.rig;
+      r.x = x + 0.5; r.y = y + 1 - 0.375; r.vx = 0; r.vy = 0; r.drill = null; r.fuel = 999; r.hull = 9999;
+    }, d);
+    await wait(page, 700);
+    await shot(page, `30-dig-${name}`);
+  }
+  await page.keyboard.down('ArrowDown');
+  await wait(page, 260);
+  await shot(page, '31-drilling-down');
+  await page.keyboard.up('ArrowDown');
+  await wait(page, 1500);
+  await page.keyboard.down('ArrowRight');
+  await wait(page, 300);
+  await shot(page, '32-drilling-right');
+  await page.keyboard.up('ArrowRight');
+}
+
+if (want('living')) {
+  // v0.3 hazards and light, set up by hand so each one is on screen.
+  const page = await open({ width: 1280, height: 720 });
+  page.on('dialog', (d) => d.accept());
+  await page.getByText(/offline game|Play offline/).click();
+  await wait(page, 400);
+  const carve = (d, extra) => page.evaluate(({ d, extra }) => {
+    const s = window.pf.session;
+    const w = s.world;
+    const x = Math.floor(w.w * 0.3);
+    const y = 10 + d;
+    for (let yy = y - 3; yy <= y; yy++) for (let xx = x - 4; xx <= x + 4; xx++) w.set(xx, yy, 0);
+    const r = s.player.rig;
+    r.x = x + 0.5; r.y = y + 1 - 0.375; r.vx = 0; r.vy = 0; r.drill = null; r.fuel = 999; r.hull = 9999;
+    s.player.upgrades.radiator = 6; s.player.upgrades.heater = 3;
+    s.player.items.flare = 5;
+    if (extra) new Function('s', 'w', 'x', 'y', extra)(s, w, x, y);
+  }, { d, extra });
+
+  await carve(70);
+  await wait(page, 700);
+  await shot(page, '40-dark-glacier-stock-lamp');
+  await carve(70, 's.player.upgrades.lamp = 4;');
+  await wait(page, 500);
+  await shot(page, '41-dark-glacier-arc-lamp');
+  await carve(260, 's.player.upgrades.lamp = 0;');
+  await wait(page, 700);
+  await shot(page, '42-bedrock-pitch-black');
+  await page.keyboard.press('Digit6');
+  await wait(page, 1600);
+  await shot(page, '43-bedrock-flare');
+
+  // A boulder over a shaft: dig the tile under it and catch it falling.
+  await carve(80, 's.player.upgrades.lamp = 4; w.set(x + 3, y - 4, 8); for (let k = 0; k < 4; k++) w.set(x + 3, y + 1 + k, 4); w.set(x + 3, y - 3, 3);');
+  await wait(page, 400);
+  await page.evaluate(() => {
+    const s = window.pf.session; const w = s.world; const x = Math.floor(w.w * 0.3); const y = 10 + 80;
+    w.set(x + 3, y - 3, 0);
+  });
+  await wait(page, 300);
+  await shot(page, '44-boulder-loose');
+  await wait(page, 450);
+  await shot(page, '45-boulder-falling');
+  await wait(page, 900);
+  await shot(page, '46-boulder-landed');
+
+  // Meltwater: a pocket above the room, dug open.
+  await carve(90, 's.player.upgrades.lamp = 4; w.set(x - 2, y - 4, 15);');
+  await wait(page, 300);
+  await page.evaluate(() => {
+    const s = window.pf.session; const w = s.world; const x = Math.floor(w.w * 0.3); const y = 10 + 90;
+    w.set(x - 2, y - 4, 0);
+  });
+  await wait(page, 600);
+  await shot(page, '47-meltwater');
+  await wait(page, 9000);
+  await shot(page, '48-meltwater-frozen');
+
+  // A steam vent and magma in the Geothermal Zone.
+  await carve(400, 's.player.upgrades.lamp = 2; w.set(x - 3, y + 1, 49); w.set(x + 3, y + 1, 49); w.set(x + 5, y - 1, 10); w.set(x + 5, y, 10);');
+  await wait(page, 300);
+  await page.evaluate(() => {
+    const s = window.pf.session; const w = s.world; const x = Math.floor(w.w * 0.3); const y = 10 + 400;
+    w.set(x + 4, y - 1, 6); w.set(x + 4, y - 1, 0); // open beside the magma so it pours
+  });
+  // Wait for a vent to blow (they run on a 6 s cycle).
+  await page.waitForFunction(() => {
+    const s = window.pf.session; const w = s.world; const x = Math.floor(w.w * 0.3); const y = 10 + 400;
+    return [x - 3, x + 3].some((vx) => window.pf.ventActive(w, vx, y + 1));
+  }, null, { timeout: 8000 });
+  await wait(page, 500);
+  await shot(page, '49-geothermal-vents-magma');
+
+  // A blizzard at the station.
+  await page.evaluate(() => {
+    const s = window.pf.session;
+    const w = s.world;
+    let t = Date.now() / 1000;
+    let k = 0;
+    while (window.pf.blizzardAt(w.seed, t + k) < 0.95 && k < 400000) k += 30;
+    window.pf.shiftClock(k);
+    const sp = w.spawn();
+    const r = s.player.rig;
+    r.x = sp.x - 6; r.y = sp.y - 3; r.vx = 0; r.vy = 0;
+  });
+  await page.keyboard.down('ArrowUp');
+  await wait(page, 1200);
+  await page.keyboard.up('ArrowUp');
+  await shot(page, '50-blizzard');
+  // The Machine Shop with the new Headlamp line.
+  await page.evaluate(() => {
+    const s = window.pf.session;
+    s.player.cash = 20000;
+    window.pf.ui.openBuilding(s.world.station.find((b) => b.key === 'shop'));
+  });
+  await wait(page, 300);
+  await shot(page, '51-shop');
+}
+
 await browser.close();
 if (errors.length) {
   console.log('ERRORS:\n' + [...new Set(errors)].join('\n'));

@@ -279,4 +279,50 @@ describe('two miners', () => {
     expect(w.get(x, SKY)).toBe(T.AIR);
     expect(cargoCount(a.client.player!) + cargoCount(b.client.player!)).toBe(1);
   });
+
+  it('the server runs the living ice: everyone sees a rockfall, and only the miner it lands on is hurt', () => {
+    const lab = new Lab();
+    const a = lab.join({ lag: 2 });
+    const b = lab.join({ lag: 2 });
+    const sa = a.session!;
+    const sb = b.session!;
+    const w = lab.game.world;
+    const x = 12;
+    const y = SKY + 60;
+    for (let yy = y - 2; yy <= y + 6; yy++) for (let xx = x - 2; xx <= x + 2; xx++) w.set(xx, yy, T.ICE);
+    for (let k = 2; k <= 4; k++) w.set(x, y + k, T.AIR);
+    w.set(x, y, T.BOULDER); // resting on the ice at y + 1 for now
+    placeRig(a.client.player!.rig, x + 0.5, y + 5);
+    lab.run([sa, sb], 5);
+    const seenA: string[] = [];
+    const seenB: string[] = [];
+    sa.on((e) => seenA.push(e.t === 'hurt' ? `hurt:${e.cause}` : e.t));
+    sb.on((e) => seenB.push(e.t === 'hurt' ? `hurt:${e.cause}` : e.t));
+    const hull = a.client.player!.rig.hull;
+    // Knock the floor out from under it.
+    w.set(x, y + 1, T.AIR);
+    lab.run([sa, sb], 150);
+    expect(seenA).toEqual(expect.arrayContaining(['loose', 'fall', 'crash', 'hurt:rock']));
+    expect(seenB).toEqual(expect.arrayContaining(['loose', 'fall', 'crash']));
+    expect(seenB).not.toContain('hurt:rock');
+    expect(a.client.player!.rig.hull).toBeLessThan(hull);
+    expect(sa.player.rig.hull).toBe(a.client.player!.rig.hull);
+    expect(Buffer.from(sb.world.tiles).equals(Buffer.from(w.tiles))).toBe(true);
+  });
+
+  it('a flare one miner drops shows up for the others', () => {
+    const lab = new Lab();
+    const a = lab.join();
+    const b = lab.join();
+    const sb = b.session!;
+    const flares: number[] = [];
+    sb.on((e) => {
+      if (e.t === 'flare') flares.push(e.x);
+    });
+    a.client.player!.items.flare = 1;
+    lab.game.handle(a.client, { t: 'act', id: 1, act: { a: 'use', k: 'flare' } });
+    lab.run([sb], 5);
+    expect(flares).toEqual([a.client.player!.rig.x]);
+    expect(a.client.player!.items.flare).toBe(0);
+  });
 });

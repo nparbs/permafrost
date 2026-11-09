@@ -61,6 +61,10 @@ export class World {
   readonly diffs = new Map<number, number>();
   /** Indices changed since the renderer last looked. */
   readonly dirty: number[] = [];
+  /** Called after every tile change. The environment (src/sim/env.ts) listens here. */
+  onSet?: (x: number, y: number, was: number, now: number) => void;
+  /** Wall-clock seconds, the same on every screen. Steam vents and blizzards run off it. */
+  time = 0;
   /** layerTop[x * LAYERS.length + i] = depth where layer i starts in column x. */
   private readonly layerTop: Int16Array;
   private readonly padCols = new Set<number>();
@@ -107,7 +111,7 @@ export class World {
     // Caves: wide ice caverns in the glacier, smaller pockets deeper down.
     if (d > 10) {
       if (layer === L.ICE) {
-        if (valueNoise(x / 7, d / 3.5, seed + 101) > 0.8) return T.AIR;
+        if (this.iceCave(x, d)) return T.AIR;
       } else if (layer >= L.PERMA && fbm(x / 6, d / 5, seed + 202) > 0.72) {
         return T.AIR;
       }
@@ -116,15 +120,30 @@ export class World {
     if (layer >= L.BASALT && valueNoise(x / 5, d / 2.5, seed + 303) > 0.83 - (d - 340) * 0.0003) return T.MAGMA;
     if (d > 40 && hash3(x, y, seed + 404) < BOULDER_CHANCE[layer]) return T.BOULDER;
     if (d > 140 && hash3(x, y, seed + 505) < 0.006) return T.GAS;
+    if (layer === L.ICE) {
+      // Slabs hang over the ice caverns; meltwater sits in pockets through the glacier.
+      if (d > 12 && this.iceCave(x, d + 1) && hash3(x, y, seed + 808) < 0.45) return T.SLAB;
+      if (d > 36 && hash3(x, y, seed + 909) < 0.008) return T.MELT;
+    }
+    if (layer === L.BASALT && hash3(x, y, seed + 1010) < 0.007) return T.VENT;
 
     const roll = hash3(x, y, seed + 606);
     const vein = valueNoise(x / 3, d / 3, seed + 707) > 0.6 ? 2.5 : 0.5;
+    return this.pickMineral(d, layer, roll, vein) ?? base;
+  }
+
+  /** A mineral for this depth and layer from a roll in [0, 1), or null for plain ground. */
+  pickMineral(d: number, layer: number, roll: number, vein = 1): number | null {
     let acc = 0;
     for (let i = 0; i < MINERALS.length; i++) {
       acc += mineralChance(MINERALS[i], d, layer) * vein;
       if (roll < acc) return MINERAL_BASE + i;
     }
-    return base;
+    return null;
+  }
+
+  private iceCave(x: number, d: number): boolean {
+    return d > 10 && this.layerAtDepth(x, d) === L.ICE && valueNoise(x / 7, d / 3.5, this.seed + 101) > 0.8;
   }
 
   inBounds(x: number, y: number): boolean {
@@ -140,11 +159,13 @@ export class World {
   set(x: number, y: number, t: number): void {
     if (!this.inBounds(x, y)) return;
     const i = y * this.w + x;
-    if (this.tiles[i] === t) return;
+    const was = this.tiles[i];
+    if (was === t) return;
     this.tiles[i] = t;
     if (this.generate(x, y) === t) this.diffs.delete(i);
     else this.diffs.set(i, t);
     this.dirty.push(i);
+    this.onSet?.(x, y, was, t);
   }
 
   /** Re-apply saved changes, e.g. after loading. */

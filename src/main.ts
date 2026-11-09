@@ -12,8 +12,9 @@ import { PAINT_COUNT } from './net/protocol';
 import { ITEMS, ITEM_ORDER } from './sim/items';
 import { statsOf } from './sim/player';
 import { rigDepth, type Input } from './sim/rig';
-import { MINERALS, tileDef } from './sim/tiles';
-import { UI, money, whyText, type TitleInfo } from './ui/ui';
+import { MINERALS, T, tileDef } from './sim/tiles';
+import { blizzardAt, ventActive } from './sim/weather';
+import { UI, layerForDepth, money, whyText, type TitleInfo } from './ui/ui';
 
 const sfx = new Sfx();
 const paintPref = () => {
@@ -150,11 +151,14 @@ let lastAlarm = 0;
 let lastFull = 0;
 let wasCold = false;
 let wasHot = false;
+let wasScald = false;
+let wasStorm = false;
 
-function onFrame(sc: GameScene): void {
+function onFrame(): void {
   const r = session.player.rig;
-  ui.frame(sc.rigScreen());
+  ui.frame();
   const idle = ui.titleOpen || (session.paused && !session.online);
+  sfx.musicFrame(layerForDepth(rigDepth(r)), !ui.titleOpen);
   const tile = r.drill ? session.world.get(r.drill.tx, r.drill.ty) : 0;
   sfx.drill(!!r.drill && !idle, tileDef(tile).hardness);
   sfx.thrust(r.thrusting && !idle);
@@ -168,12 +172,35 @@ function onFrame(sc: GameScene): void {
   }
   if (r.cold && !wasCold) ui.toast(`Too cold for your heater (${st.minTemp}°C). The engine is burning extra fuel.`, 'warn', 3200);
   if (r.hot && !wasHot) ui.toast(`Overheating! Your radiator is rated to ${st.maxTemp}°C. The hull is taking damage.`, 'bad', 3200);
+  if (r.scald && !wasScald) ui.toast('Steam vent! It scalds the hull and shoves you upward.', 'bad', 2600);
   wasCold = r.cold;
   wasHot = r.hot;
+  wasScald = r.scald;
+  const w = session.world;
+  const storm = blizzardAt(w.seed, w.time) > 0.05;
+  if (storm && !wasStorm && rigDepth(r) < 15) {
+    ui.toast('Blizzard rolling in. Colder at the surface, and flying burns more fuel.', 'warn', 4200);
+    sfx.rumble();
+  }
+  wasStorm = storm;
   if (session instanceof LocalSession && now - lastSave > 10000) {
     lastSave = now;
     saveSession(session);
   }
+}
+
+function near(x: number, y: number, dist: number): boolean {
+  const r = session.player.rig;
+  return Math.abs(x + 0.5 - r.x) < dist && Math.abs(y + 0.5 - r.y) < dist;
+}
+
+/** Explain a new hazard the first time it shows up in a session. */
+const hintsShown = new Map<string, number>();
+function hint(key: string, text: string): void {
+  const n = hintsShown.get(key) ?? 0;
+  if (n >= 1) return;
+  hintsShown.set(key, n + 1);
+  ui.toast(text, 'warn', 4200);
 }
 
 function onEvent(e: SessionEvent): void {
@@ -192,10 +219,12 @@ function onEvent(e: SessionEvent): void {
       }
       break;
     case 'dug':
-      sfx.dug();
+      if (e.tile === T.RIME) sfx.crunch();
+      else sfx.dug();
       break;
     case 'hurt':
       if (e.cause === 'gas') ui.toast(`Gas pocket! −${Math.ceil(e.amount)} hull`, 'bad');
+      else if (e.cause === 'rock') ui.toast(`Rockfall! −${Math.ceil(e.amount)} hull`, 'bad');
       else if (e.amount >= 1) ui.toast(`Hard landing: −${Math.ceil(e.amount)} hull`, 'bad');
       sfx.thud(Math.min(1, e.amount / 20));
       break;
@@ -210,7 +239,33 @@ function onEvent(e: SessionEvent): void {
       if (Math.hypot(e.x - r.x, e.y - r.y) < 16) sfx.boom();
       break;
     }
+    case 'loose':
+      if (near(e.x, e.y, 10)) sfx.creak();
+      break;
+    case 'fall':
+      if (near(e.x, e.y, 12)) sfx.rumble();
+      break;
+    case 'crash':
+    case 'thump':
+      if (near(e.x, e.y, 12)) sfx.thud(e.t === 'crash' ? 0.6 : 0.3);
+      break;
+    case 'flood':
+      if (near(e.x, e.y, 12)) {
+        sfx.splash();
+        hint('flood', 'Meltwater! It freezes into rime in a few seconds. Thrust up into rime to break through.');
+      }
+      break;
+    case 'pour':
+      if (near(e.x, e.y, 10)) {
+        sfx.hiss();
+        hint('pour', "Magma's pouring in. It cools to slag in half a minute, and slag can be dug.");
+      }
+      break;
+    case 'flare':
+      if (near(e.x, e.y, 14)) sfx.fizz();
+      break;
     case 'item':
+      if (e.item === 'flare') break;
       sfx.buy();
       ui.toast(`Used ${ITEMS[e.item].name}`, '', 1400);
       break;
@@ -278,7 +333,7 @@ window.addEventListener('keydown', (e) => {
   }
   if (e.repeat) return;
   if (e.code === 'KeyE' || e.code === 'Enter') ui.interact();
-  const digit = /^Digit([1-5])$/.exec(e.code);
+  const digit = /^Digit([1-6])$/.exec(e.code);
   if (digit) ui.useItem(ITEM_ORDER[Number(digit[1]) - 1]);
 });
 window.addEventListener('keyup', (e) => {
@@ -300,4 +355,11 @@ window.addEventListener('pagehide', () => {
   get session() {
     return session;
   },
+  /** Shift the clock that weather and vents run on, in seconds (headless checks only). */
+  shiftClock(seconds: number) {
+    const real = Date.now.bind(Date);
+    Date.now = () => real() + seconds * 1000;
+  },
+  blizzardAt,
+  ventActive,
 };

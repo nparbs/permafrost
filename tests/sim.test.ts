@@ -3,7 +3,7 @@ import { newPlayer, placeRig, statsOf, cargoCount, RIG_H } from '../src/sim/play
 import { BURN, STEP, noInput, rigDepth, step, useItem, type Input, type SimEvent } from '../src/sim/rig';
 import { buildingAt, buyItem, buyUpgrade, refuel, repair, sellAll, tow } from '../src/sim/station';
 import { TEMP_POINTS, tempAtDepth } from '../src/sim/temperature';
-import { LAYERS, MINERALS, MINERAL_BASE, T, isSolid } from '../src/sim/tiles';
+import { LAYERS, MINERALS, MINERAL_BASE, T, isMineral, isSolid } from '../src/sim/tiles';
 import { UPGRADES, UPGRADE_ORDER } from '../src/sim/upgrades';
 import { DEPTH, SKY, WORLD_H, World } from '../src/sim/world';
 
@@ -63,7 +63,7 @@ describe('world generation', () => {
       for (let y = SKY; y < WORLD_H; y++) {
         for (let x = 0; x < W; x++) {
           const t = w.get(x, y);
-          if (t < MINERAL_BASE) continue;
+          if (!isMineral(t)) continue;
           const i = t - MINERAL_BASE;
           const m = MINERALS[i];
           const d = y - SKY;

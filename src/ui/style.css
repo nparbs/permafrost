@@ -64,12 +64,6 @@ kbd {
 
 /* ---------------------------------------------------------------- light, cold and heat */
 
-.shade {
-  position: absolute;
-  inset: 0;
-  opacity: 0;
-  background: radial-gradient(circle at var(--lx, 50%) var(--ly, 50%), transparent calc(var(--lr, 160px) * 0.35), rgba(2, 4, 10, 0.97) var(--lr, 160px));
-}
 .frost {
   position: absolute;
   inset: 0;
@@ -307,6 +301,12 @@ kbd {
     transform: translate(-50%, -3px);
   }
 }
+.prompt b {
+  display: none;
+}
+.prompt span {
+  margin-left: 4px;
+}
 
 .items {
   position: absolute;
@@ -365,8 +365,55 @@ kbd {
 #ui.touch-on .items {
   bottom: calc(max(8px, env(safe-area-inset-bottom)) + 4px);
 }
-#ui.touch-on .item kbd {
+#ui.touch-on kbd {
   display: none;
+}
+/* On touch the building prompt is a big Enter button right above the thrust button. */
+#ui.touch-on .prompt {
+  left: auto;
+  right: max(12px, env(safe-area-inset-right));
+  bottom: calc(max(12px, env(safe-area-inset-bottom)) + 84px);
+  transform: none;
+  width: 74px;
+  min-height: 64px;
+  padding: 6px 4px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  border-radius: 10px;
+  touch-action: manipulation;
+}
+#ui.touch-on .prompt.show {
+  animation: glow 1.4s ease-in-out infinite;
+}
+#ui.touch-on .prompt b {
+  display: block;
+  font-size: 15px;
+  font-weight: 400;
+  color: var(--ice);
+}
+#ui.touch-on .prompt span {
+  margin: 0;
+  font-size: 9px;
+  line-height: 1.25;
+  text-align: center;
+  color: var(--dim);
+}
+@keyframes glow {
+  50% {
+    box-shadow: 0 0 12px rgba(140, 210, 255, 0.55);
+  }
+}
+.help-touch {
+  display: none;
+}
+#ui.touch-on .help {
+  display: none;
+}
+#ui.touch-on .help-touch {
+  display: block;
 }
 .dpad,
 .tpad {
@@ -403,16 +450,23 @@ kbd {
   background: rgba(60, 120, 180, 0.6);
 }
 @media (orientation: portrait) {
+  /* Left-aligned so the right-hand column stays free for the Enter button above thrust. */
   #ui.touch-on .items {
     bottom: calc(max(12px, env(safe-area-inset-bottom)) + 84px);
+    left: max(12px, env(safe-area-inset-left));
+    transform: none;
   }
-  #ui.touch-on .prompt {
-    bottom: calc(max(12px, env(safe-area-inset-bottom)) + 140px);
+  /* Six items have to fit left of the Enter button on a 360px-wide screen. */
+  #ui.touch-on .item {
+    width: 38px;
+    height: 40px;
   }
 }
 @media (orientation: landscape) {
+  /* Two columns, so the stack stays clear of the Chat and Menu buttons on a 360px-tall screen. */
   #ui.touch-on .items {
-    flex-direction: column;
+    display: grid;
+    grid-template-columns: repeat(2, 38px);
     left: auto;
     right: calc(max(12px, env(safe-area-inset-right)) + 82px);
     transform: none;
@@ -646,7 +700,9 @@ details.prices {
   position: absolute;
   inset: 0;
   display: grid;
-  place-items: center;
+  place-items: safe center;
+  overflow-y: auto;
+  touch-action: pan-y;
   padding: 16px;
   pointer-events: auto;
   background: radial-gradient(ellipse at 50% 40%, rgba(4, 8, 20, 0.35), rgba(2, 4, 10, 0.85));
@@ -688,14 +744,33 @@ details.prices {
 .help p {
   margin: 2px 0;
 }
+.help span {
+  white-space: nowrap;
+}
 .ver {
   margin: 0;
   font-size: 9px;
   color: #4a5a6e;
 }
 @media (max-height: 420px) {
+  .title {
+    padding: 10px 16px;
+  }
   .title-box {
     gap: 6px;
+  }
+  .title h1 {
+    font-size: 40px;
+  }
+  /* Short landscape phones: buttons side by side so the whole screen fits. */
+  .title-btns {
+    grid-auto-flow: column;
+    grid-auto-columns: 1fr;
+    width: min(540px, 90vw);
+  }
+  .title-btns .btn {
+    font-size: 12px;
+    padding: 9px 6px;
   }
   .help {
     line-height: 1.5;

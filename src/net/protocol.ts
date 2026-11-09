@@ -5,7 +5,7 @@ import type { Player, PlayerStats, Rig } from '../sim/player';
 import type { Input, SimEvent } from '../sim/rig';
 
 /** Bump when old pages can't talk to a new server. They're told to refresh. */
-export const PROTOCOL_VERSION = 1;
+export const PROTOCOL_VERSION = 2;
 
 export const packInput = (i: Input): number => (i.left ? 1 : 0) | (i.right ? 2 : 0) | (i.up ? 4 : 0) | (i.down ? 8 : 0);
 export const unpackInput = (b: number): Input => ({ left: (b & 1) > 0, right: (b & 2) > 0, up: (b & 4) > 0, down: (b & 8) > 0 });
@@ -45,7 +45,8 @@ export type ClientMsg =
   | { t: 'profile'; name: string; paint: number };
 
 export type ServerMsg =
-  | { t: 'welcome'; v: number; token: string; you: PeerInfo; world: WorldInfo; player: Player; peers: PeerInfo[]; online: number }
+  /** `now` is the server's clock in ms, so weather and steam vents line up. */
+  | { t: 'welcome'; v: number; token: string; you: PeerInfo; world: WorldInfo; player: Player; peers: PeerInfo[]; online: number; now: number }
   /** Your rig as the server has it after input `ack`. */
   | { t: 'snap'; ack: number; rig: Rig; cargo: Record<string, number>; stats: PlayerStats }
   /** Your full state, after anything changes your cash, upgrades or items. */
@@ -56,7 +57,7 @@ export type ServerMsg =
   | { t: 'rigs'; r: RigView[]; online: number }
   | { t: 'peer'; p: PeerInfo }
   | { t: 'leave'; id: string }
-  /** Something another player set off, like a blast. */
+  /** Something another player set off, like a blast, or the world did (by is ''), like a rockfall. */
   | { t: 'fx'; e: SimEvent; by: string }
   /** Events from your own action, like using a charge. */
   | { t: 'ev'; e: SimEvent[] }

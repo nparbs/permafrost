@@ -6,6 +6,7 @@ import {
   type ClientMsg, type PeerInfo, type RigView, type ServerMsg,
 } from '../src/net/protocol';
 import { applyAction, isAction } from '../src/sim/actions';
+import { Environment } from '../src/sim/env';
 import { newPlayer, type Player } from '../src/sim/player';
 import { revivePlayer } from '../src/sim/revive';
 import { STEP, noInput, step, type SimEvent } from '../src/sim/rig';
@@ -70,6 +71,7 @@ export class Game {
   private tickNo = 0;
   private worldDirty = false;
   private lastSave = Date.now();
+  private env: Environment;
   now: () => number = Date.now;
 
   constructor(
@@ -83,6 +85,8 @@ export class Game {
     this.world.applyDiffs(row.diffs);
     this.world.dirty.length = 0;
     this.season = row.season;
+    this.world.time = this.now() / 1000;
+    this.env = new Environment(this.world);
   }
 
   get online(): number {
@@ -166,6 +170,7 @@ export class Game {
       player: p,
       peers,
       online: this.clients.size,
+      now: this.now(),
     });
     this.broadcast({ t: 'peer', p: c.info() }, c);
   }
@@ -219,12 +224,13 @@ export class Game {
 
   /** Effects other players should see, like blasts. */
   private shareEvent(c: Client, e: SimEvent): void {
-    if (e.t === 'blast') this.broadcast({ t: 'fx', e, by: c.id }, c);
+    if (e.t === 'blast' || e.t === 'flare') this.broadcast({ t: 'fx', e, by: c.id }, c);
   }
 
   tick(): void {
     this.tickNo++;
     const now = this.now();
+    this.world.time = now / 1000;
     for (const c of this.clients) {
       const p = c.player!;
       c.budget = Math.min(c.budget + 1.05, MAX_BUDGET);
@@ -248,6 +254,12 @@ export class Game {
         this.shareEvent(c, e);
         if (e.t === 'pickup') c.meDirty = true;
       }
+    }
+
+    const out = this.env.step([...this.clients].map((c) => c.player!), STEP);
+    for (const e of out.fx) this.broadcast({ t: 'fx', e, by: '' });
+    for (const [p, e] of out.personal) {
+      for (const c of this.clients) if (c.player === p) c.send({ t: 'ev', e: [e] });
     }
 
     const w = this.world;
