@@ -3,13 +3,15 @@
 import Phaser from 'phaser';
 import { RIG_H, RIG_W, statsOf, type HurtCause } from '../sim/player';
 import { RIG_SOS, RIG_STALLED, RIG_THRUST, RIG_WRECKED, RigMode } from '../net/protocol';
+import { SUNSET, daylight, dayPhase } from '../sim/daytime';
 import { FLARE } from '../sim/items';
 import { rigDepth } from '../sim/rig';
-import { MINERALS, T, isDiggable, isSolid } from '../sim/tiles';
+import { MINERALS, MINERAL_BASE, T, isDiggable, isMineral, isSolid, tileDef } from '../sim/tiles';
 import { blizzardAt, ventActive, windDir } from '../sim/weather';
 import { SKY } from '../sim/world';
+import { quality } from './gfx';
 import type { GameSession, SessionEvent } from './session';
-import { LAYER_PAL, PAINTS, TS, debrisColor, frameFor, makeTextures, overIndex, rgbNum, tileFrame, visIndex } from './textures';
+import { LAYER_PAL, PAINTS, TS, backColor, debrisColor, frameFor, makeTextures, overIndex, rgbNum, rigKey, tileFrame, tilesKey, visIndex } from './textures';
 
 /** Moments in a cutscene that want a sound. */
 export type Cue = 'sputter' | 'freeze' | 'crash' | 'boom' | 'hiss' | 'rotor' | 'land';
@@ -102,6 +104,14 @@ export class GameScene extends Phaser.Scene {
   private steam!: Phaser.GameObjects.Particles.ParticleEmitter;
   private storm!: Phaser.GameObjects.Particles.ParticleEmitter;
   private fog!: Phaser.GameObjects.Rectangle;
+  /** Day and night: the day sky and the dawn and dusk colours fade in over the night sky, and night dims the surface. */
+  private skyDay!: Phaser.GameObjects.Image;
+  private skyDusk!: Phaser.GameObjects.Image;
+  private mountainsDay!: Phaser.GameObjects.TileSprite;
+  private night!: Phaser.GameObjects.Rectangle;
+  private sun?: Phaser.GameObjects.Image;
+  private sunGlow?: Phaser.GameObjects.Image;
+  private windows: Phaser.GameObjects.Image[] = [];
   /** Darkness, with lights erased out of it. Covers the camera view, in world pixels. */
   private dark?: Phaser.GameObjects.RenderTexture;
   private loose = new Map<string, FallingTile>();
@@ -120,6 +130,21 @@ export class GameScene extends Phaser.Scene {
   private floatN = 0;
   private peerSprites = new Map<string, PeerSprite>();
   private bubbles = new Map<string, { text: Phaser.GameObjects.Text; until: number }>();
+  /** High graphics: the outlined rig, coloured light, glints and the fuller sky. Low is the plain look. */
+  private high = false;
+  /** Coloured light, added on top of everything: lamps, the beam, magma, flares. High graphics only. */
+  private glow?: Phaser.GameObjects.RenderTexture;
+  private shadow?: Phaser.GameObjects.Image;
+  private halo?: Phaser.GameObjects.Image;
+  private exhaust?: Phaser.GameObjects.Particles.ParticleEmitter;
+  private twinkle?: Phaser.GameObjects.Particles.ParticleEmitter;
+  private moon?: Phaser.GameObjects.Image;
+  private moonGlow?: Phaser.GameObjects.Image;
+  private stars2?: Phaser.GameObjects.TileSprite;
+  private exhaustTimer = 0;
+  private twinkleTimer = 0;
+  /** The session this scene already listens to, so a restart for a settings change doesn't listen twice. */
+  private heard?: GameSession;
 
   constructor() {
     super('Game');
@@ -130,21 +155,36 @@ export class GameScene extends Phaser.Scene {
     this.session = data.session;
     // The scene is restarted, not rebuilt, when the session changes: drop anything left from before.
     this.dark = undefined;
+    this.glow = undefined;
+    this.windows = [];
+    this.sun = this.sunGlow = undefined;
+    this.shadow = this.halo = this.exhaust = this.twinkle = this.moon = this.moonGlow = this.stars2 = undefined;
+    this.high = quality() === 'high';
     this.loose = new Map();
     this.flares = [];
     this.peerSprites = new Map();
     this.bubbles = new Map();
     this.cine = null;
     this.lampK = 1;
-    makeTextures(this);
+    makeTextures(this, this.high);
     const world = this.session.world;
     const W = world.w * TS;
     const H = world.h * TS;
 
     this.add.image(0, 0, 'sky').setOrigin(0).setDisplaySize(W, SKY * TS).setDepth(-10);
+    this.skyDay = this.add.image(0, 0, 'sky-day').setOrigin(0).setDisplaySize(W, SKY * TS).setDepth(-9.95).setAlpha(0);
+    this.skyDusk = this.add.image(0, 0, 'sky-dusk').setOrigin(0).setDisplaySize(W, SKY * TS).setDepth(-9.9).setAlpha(0);
+    this.mountainsDay = this.add.tileSprite(0, SKY * TS - 80, W, 80, 'mountains-day').setOrigin(0).setDepth(-6.9).setAlpha(0);
     this.stars = this.add.tileSprite(0, 0, W, SKY * TS * 0.7, 'stars').setOrigin(0).setDepth(-9);
     this.aurora = this.add.tileSprite(0, 6, W, 64, 'aurora').setOrigin(0).setDepth(-8).setBlendMode(Phaser.BlendModes.ADD);
     this.mountains = this.add.tileSprite(0, SKY * TS - 80, W, 80, 'mountains').setOrigin(0).setDepth(-7);
+    if (this.high) {
+      this.stars2 = this.add.tileSprite(0, 0, W, 96, 'stars2').setOrigin(0).setDepth(-8.9);
+      this.moonGlow = this.add.image(0, 34, 'light').setDepth(-8.8).setBlendMode(Phaser.BlendModes.ADD).setTint(0x9fc4ff).setAlpha(0.3).setScale(0.75);
+      this.moon = this.add.image(0, 34, 'moon').setDepth(-8.7);
+      this.sunGlow = this.add.image(0, 34, 'light').setDepth(-8.8).setBlendMode(Phaser.BlendModes.ADD).setTint(0xffe2a0).setAlpha(0.55).setScale(0.9);
+      this.sun = this.add.image(0, 34, 'sun').setDepth(-8.7);
+    }
 
     const grid: number[][] = [];
     for (let y = 0; y < world.h; y++) {
@@ -153,7 +193,7 @@ export class GameScene extends Phaser.Scene {
       grid.push(row);
     }
     const map = this.make.tilemap({ data: grid, tileWidth: TS, tileHeight: TS });
-    const tiles = map.addTilesetImage('tiles', 'tiles', TS, TS, 0, 0)!;
+    const tiles = map.addTilesetImage('tiles', tilesKey(), TS, TS, 0, 0)!;
     this.layer = map.createLayer(0, tiles, 0, 0)!;
     this.layer.setDepth(0);
 
@@ -165,16 +205,25 @@ export class GameScene extends Phaser.Scene {
     }
     // insertNull keeps the mostly empty overlay cheap.
     const omap = this.make.tilemap({ data: ogrid, tileWidth: TS, tileHeight: TS, insertNull: true });
-    const otiles = omap.addTilesetImage('tiles', 'tiles', TS, TS, 0, 0)!;
+    const otiles = omap.addTilesetImage('tiles', tilesKey(), TS, TS, 0, 0)!;
     this.over = omap.createLayer(0, otiles, -TS / 2, -TS / 2)!;
     this.over.setDepth(0.2);
     world.dirty.length = 0;
 
     this.bites = this.add.graphics().setDepth(0.5);
 
-    for (const b of world.station) this.add.image(b.x * TS, SKY * TS, `b-${b.key}`).setOrigin(0, 1).setDepth(1);
+    for (const b of world.station) {
+      this.add.image(b.x * TS, SKY * TS, `b-${b.key}`).setOrigin(0, 1).setDepth(1);
+      // Warm light spilling from the windows.
+      if (this.high) this.windows.push(this.add.image(b.x * TS + 32, SKY * TS - 18, 'light').setDepth(1.1).setBlendMode(Phaser.BlendModes.ADD).setTint(0xffb860).setAlpha(0.2).setScale(0.62, 0.42));
+    }
 
-    this.rig = this.add.sprite(0, 0, `rig${this.session.paint}`, 'idle0').setDepth(5);
+    this.rig = this.add.sprite(0, 0, rigKey(this.session.paint), 'idle0').setDepth(5);
+    if (this.high) {
+      this.shadow = this.add.image(0, 0, 'shadow').setDepth(4.3).setAlpha(0.7).setVisible(false);
+      // A soft light behind the rig, so its dark outline always has something to stand against.
+      this.halo = this.add.image(0, 0, 'light').setDepth(4.25).setBlendMode(Phaser.BlendModes.ADD).setTint(0xcfe4ff).setAlpha(0.2).setScale(0.42);
+    }
     this.flame = this.add.image(0, 0, 'flame', 'f0').setDepth(4).setVisible(false);
 
     this.dust = this.add.particles(0, 0, 'px', {
@@ -232,23 +281,49 @@ export class GameScene extends Phaser.Scene {
       alpha: { start: 0.75, end: 0 },
       tint: 0x343840,
     }).setDepth(6.4);
+    if (this.high) {
+      this.exhaust = this.add.particles(0, 0, 'puff', {
+        emitting: false,
+        lifespan: { min: 450, max: 800 },
+        speedY: { min: -26, max: -12 },
+        speedX: { min: -5, max: 5 },
+        scale: { start: 0.35, end: 1.2 },
+        alpha: { start: 0.55, end: 0 },
+        tint: 0xaab4c2,
+      }).setDepth(4.8);
+      this.twinkle = this.add.particles(0, 0, 'twinkle', {
+        emitting: false,
+        lifespan: { min: 380, max: 620 },
+        scale: { start: 1, end: 0.2 },
+        alpha: { start: 1, end: 0 },
+        rotate: { start: 0, end: 90 },
+        blendMode: Phaser.BlendModes.ADD,
+      }).setDepth(0.6);
+    }
     this.chute = this.add.image(0, 0, 'chute').setOrigin(0.5, 1).setDepth(5.1).setVisible(false);
     this.lifter = this.add.image(0, 0, 'lifter', 'l0').setOrigin(0.5, 0).setDepth(5.2).setVisible(false);
     this.cable = this.add.graphics().setDepth(5.05);
     this.fog = this.add.rectangle(0, 0, 8, 8, 0xdde8f4, 0).setOrigin(0).setScrollFactor(0).setDepth(7.7);
+    this.night = this.add.rectangle(0, 0, 8, 8, 0x06103a, 0).setOrigin(0).setScrollFactor(0).setDepth(7.75);
 
     const cam = this.cameras.main;
     cam.setBounds(0, 0, W, H);
     cam.setBackgroundColor('#04060f');
     cam.setRoundPixels(true);
     cam.resetFX();
+    cam.postFX?.clear();
+    // Darker corners, so the eye stays on the rig. WebGL only.
+    if (this.high && this.renderer.type === Phaser.WEBGL) cam.postFX.addVignette(0.5, 0.5, 0.92, 0.32);
     this.applyZoom();
     this.syncRig(0);
     cam.startFollow(this.rig, true, 0.2, 0.2);
     cam.centerOn(this.rig.x, this.rig.y);
     this.scale.on('resize', this.applyZoom, this);
     this.events.once('shutdown', () => this.scale.off('resize', this.applyZoom, this));
-    this.session.on((e) => this.onEvent(e));
+    if (this.heard !== this.session) {
+      this.heard = this.session;
+      this.session.on((e) => this.onEvent(e));
+    }
   }
 
   private applyZoom(): void {
@@ -262,7 +337,12 @@ export class GameScene extends Phaser.Scene {
       this.dark?.destroy();
       this.dark = this.add.renderTexture(0, 0, w, h).setOrigin(0).setDepth(7.8);
     }
+    if (this.high && (!this.glow || this.glow.width !== w || this.glow.height !== h)) {
+      this.glow?.destroy();
+      this.glow = this.add.renderTexture(0, 0, w, h).setOrigin(0).setDepth(7.85).setBlendMode(Phaser.BlendModes.ADD);
+    }
     this.fog.setSize(cam.width, cam.height);
+    this.night.setSize(cam.width, cam.height);
   }
 
   update(_time: number, deltaMs: number): void {
@@ -278,6 +358,11 @@ export class GameScene extends Phaser.Scene {
     this.syncBubbles();
     this.syncSky();
     this.syncLight();
+    this.halo?.setPosition(this.rig.x, this.rig.y).setAlpha(this.session.player.rig.wrecked ? 0.1 * this.lampK : 0.08 + 0.14 * darkness(rigDepth(this.session.player.rig)));
+    if (this.high) {
+      this.syncGlow();
+      this.syncTwinkle(dt);
+    }
     this.hooks.onFrame?.(this);
   }
 
@@ -319,6 +404,7 @@ export class GameScene extends Phaser.Scene {
 
   private syncRig(dt: number): void {
     if (this.cine) {
+      this.shadow?.setVisible(false);
       this.stepCine(this.cine, dt);
       return;
     }
@@ -357,7 +443,22 @@ export class GameScene extends Phaser.Scene {
         const fy = d.dir === 'down' ? py + 9 : py + 1;
         this.dust.setParticleTint(debrisColor(this.session.world, d.tx, d.ty, tile));
         this.dust.emitParticleAt(fx, fy, 2);
+        // Hard rock throws sparks off the bit.
+        if (this.high && tileDef(tile).hardness >= 2 && Math.random() < 0.5) {
+          this.sparks.setParticleTint(0xffd27a);
+          this.sparks.emitParticleAt(fx, fy, 1);
+        }
       }
+    }
+
+    if (!this.high) return;
+    this.shadow?.setVisible(r.grounded && !r.wrecked).setPosition(px, py + (RIG_H / 2) * TS + 1);
+    // The engine puffs from the stack while it works.
+    const working = !r.wrecked && !r.stalled && (!!r.drill || r.thrusting || Math.abs(r.vx) > 0.3);
+    this.exhaustTimer -= dt;
+    if (working && this.exhaustTimer <= 0) {
+      this.exhaustTimer = r.drill ? 0.12 : 0.2;
+      this.exhaust?.emitParticleAt(px - r.facing * 4.5, py - 10, 1);
     }
   }
 
@@ -382,7 +483,7 @@ export class GameScene extends Phaser.Scene {
     const world = this.session.world;
     if (!isDiggable(world.get(tx, ty))) return;
     const pal = LAYER_PAL[world.layerAt(tx, ty)];
-    const back = rgbNum(pal.back.map((v) => v * 0.82) as [number, number, number]);
+    const back = rgbNum(backColor(world.layerAt(tx, ty)).map((v) => v * 0.82) as [number, number, number]);
     const rim = rgbNum(pal.dark.map((v) => v * 0.55) as [number, number, number]);
     const g = this.bites;
     const x0 = tx * TS;
@@ -403,11 +504,35 @@ export class GameScene extends Phaser.Scene {
   private syncSky(): void {
     const cam = this.cameras.main;
     const sx = cam.scrollX;
+    // Day and night. `light` is 1 in full day and 0 at night; `twilight` peaks halfway between.
+    const phase = dayPhase(this.session.world);
+    const light = daylight(phase);
+    const dim = 1 - light;
+    const twilight = 1 - Math.abs(light * 2 - 1);
+    this.skyDay.setAlpha(light);
+    this.skyDusk.setAlpha(twilight * 0.9);
     this.stars.tilePositionX = -0.92 * sx;
+    this.stars.setAlpha(dim);
     this.aurora.tilePositionX = -0.85 * sx + this.time.now * 0.004;
-    this.aurora.setAlpha(0.55 + Math.sin(this.time.now / 2300) * 0.2);
+    this.aurora.setAlpha((0.55 + Math.sin(this.time.now / 2300) * 0.2) * dim);
     this.mountains.tilePositionX = -0.6 * sx;
+    this.mountainsDay.tilePositionX = -0.6 * sx;
+    this.mountainsDay.setAlpha(light);
     const view = cam.worldView;
+    for (const g of this.windows) g.setAlpha(0.06 + 0.2 * dim);
+    if (this.moon && this.moonGlow && this.stars2 && this.sun && this.sunGlow) {
+      // The sun crosses the sky from sunrise to sunset and the moon from sunset to sunrise. Each rises
+      // and sets behind the mountains, and stays put on the screen as the camera moves.
+      const arc = (u: number): [number, number] => [Math.round(view.x + view.width * (0.1 + 0.8 * u)), Math.round(130 - Math.sin(Math.PI * u) * 106)];
+      const [sunX, sunY] = arc(phase < (1 + SUNSET) / 2 ? phase / SUNSET : (phase - 1) / SUNSET);
+      this.sun.setPosition(sunX, sunY).setVisible(sunY < 136);
+      this.sunGlow.setPosition(sunX, sunY).setVisible(sunY < 136).setAlpha(0.25 + 0.3 * twilight);
+      const [moonX, moonY] = arc(phase > SUNSET / 2 ? (phase - SUNSET) / (1 - SUNSET) : (phase + 1 - SUNSET) / (1 - SUNSET));
+      this.moon.setPosition(moonX, moonY).setVisible(moonY < 136).setAlpha(0.35 + 0.65 * dim);
+      this.moonGlow.setPosition(moonX, moonY).setVisible(moonY < 136).setAlpha(0.3 * dim);
+      this.stars2.tilePositionX = -0.92 * sx;
+      this.stars2.setAlpha((0.55 + 0.45 * Math.sin(this.time.now / 700)) * dim);
+    }
     const skyVisible = view.y < SKY * TS;
     this.snow.emitting = skyVisible;
     if (skyVisible) this.snowZone.setTo(view.x - 160, Math.max(0, view.y - 10), view.width + 320, Math.max(1, SKY * TS - view.y));
@@ -423,6 +548,8 @@ export class GameScene extends Phaser.Scene {
     const depth = view.centerY / TS - SKY;
     const near = Math.max(0, Math.min(1, 1 - depth / 10));
     this.fog.setFillStyle(0xdde8f4, b * near * 0.42);
+    // Night dims the surface. Below ground the dark takes over, so it fades out with depth.
+    this.night.setFillStyle(0x06103a, dim * near * 0.5);
   }
 
   /** Paint the dark, then erase pools of light: your headlamp, other rigs, flares, magma and vents. */
@@ -469,6 +596,78 @@ export class GameScene extends Phaser.Scene {
     }
   }
 
+  /** High graphics: coloured light on top of the scene. It never shows more than the dark allows. */
+  private syncGlow(): void {
+    const rt = this.glow;
+    if (!rt) return;
+    const view = this.cameras.main.worldView;
+    rt.setPosition(Math.floor(view.x) - 2, Math.floor(view.y) - 2);
+    rt.clear();
+    const pad = 6 * TS;
+    const glow = (x: number, y: number, radius: number, tint: number, alpha: number) => {
+      if (alpha <= 0.01 || x < view.x - pad || x > view.right + pad || y < view.y - pad || y > view.bottom + pad) return;
+      rt.stamp('light', undefined, x - rt.x, y - rt.y, { scale: (radius * 2) / 128, alpha, tint });
+    };
+    const t = this.time.now;
+    const r = this.session.player.rig;
+    const a = darkness(rigDepth(r));
+    const blink = Math.floor(t / 550) % 2 === 0;
+    /** A working rig: the lamp's warm pool, its beam, the lamp itself, the beacon and the burner. */
+    const rigLight = (x: number, y: number, facing: number, k: number, lamp: number, thrust: boolean) => {
+      glow(x, y, lamp * TS, 0xffc27a, 0.09 * a * k);
+      if (x > view.x - pad && x < view.right + pad && y > view.y - pad && y < view.bottom + pad) {
+        rt.stamp('beam', undefined, x + facing * 6 - rt.x, y - 1 - rt.y, { originX: 0, originY: 0.5, scaleX: facing * 1.15, scaleY: 1, alpha: (0.1 + 0.2 * a) * k, tint: 0xffe6b0 });
+      }
+      glow(x + facing * 6, y - 1, 3, 0xfff0b0, 0.4 * k);
+      if (blink) glow(x + facing * 2.5, y - 7.5, 3.5, 0xffa020, 0.8 * k);
+      if (thrust) glow(x, y + 10, TS * (1.25 + Math.sin(t / 40) * 0.12), 0xff8a30, 0.42);
+    };
+    const dying = this.cine?.kind === 'death';
+    const k = r.wrecked || dying ? Math.min(this.lampK, dying && this.cine!.cause === 'fuel' ? 1 : 0) : 1;
+    if (k > 0.02) rigLight(this.rig.x, this.rig.y, this.rig.flipX ? -1 : 1, k, statsOf(this.session.player).lamp * 0.9, this.flame.visible);
+    for (const s of this.peerSprites.values()) {
+      if (!s.rig.visible || s.dead || s.rig.isTinted) continue;
+      rigLight(s.rig.x, s.rig.y, s.rig.flipX ? -1 : 1, 1, 4, s.flame.visible);
+    }
+    for (const f of this.flares) {
+      const fade = Math.min(1, (f.until - t) / 6000);
+      glow(f.x, f.y, FLARE.radius * TS * 0.8, 0xff5a30, 0.2 * fade * (0.9 + Math.sin(t / 60 + f.x) * 0.1));
+      glow(f.x, f.y - 3, 7, 0xfff0c0, 0.9 * fade);
+    }
+    const w = this.session.world;
+    const x0 = Math.max(0, Math.floor(view.x / TS) - 2);
+    const x1 = Math.min(w.w - 1, Math.ceil(view.right / TS) + 2);
+    const y0 = Math.max(SKY, Math.floor(view.y / TS) - 2);
+    const y1 = Math.min(w.h - 1, Math.ceil(view.bottom / TS) + 2);
+    const pulse = 0.85 + Math.sin(t / 900) * 0.15;
+    for (let y = y0; y <= y1; y++) {
+      for (let x = x0; x <= x1; x++) {
+        const tile = w.tiles[y * w.w + x];
+        if (tile === T.MAGMA) glow((x + 0.5) * TS, (y + 0.5) * TS, 2.2 * TS, 0xff6a20, 0.1 * pulse);
+        else if (tile === T.MELT) glow((x + 0.5) * TS, (y + 0.5) * TS, 1.1 * TS, 0x4aa8ff, 0.22);
+        else if (tile === T.VENT) glow((x + 0.5) * TS, y * TS, (ventActive(w, x, y) ? 2 : 1.1) * TS, 0xff8a30, 0.2);
+      }
+    }
+  }
+
+  /** High graphics: ore near the middle of the screen glints now and then. The dark hides any out of the light. */
+  private syncTwinkle(dt: number): void {
+    this.twinkleTimer -= dt;
+    if (this.twinkleTimer > 0 || !this.twinkle) return;
+    this.twinkleTimer = 0.09;
+    const w = this.session.world;
+    const view = this.cameras.main.worldView;
+    for (let n = 0; n < 5; n++) {
+      const x = Math.floor((view.x + Math.random() * view.width) / TS);
+      const y = Math.floor((view.y + Math.random() * view.height) / TS);
+      const tile = w.get(x, y);
+      if (!isMineral(tile)) continue;
+      const m = MINERALS[tile - MINERAL_BASE];
+      this.twinkle.setParticleTint(Phaser.Display.Color.HexStringToColor(m.light).color);
+      this.twinkle.emitParticleAt(x * TS + 3 + Math.random() * 10, y * TS + 3 + Math.random() * 10, 1);
+    }
+  }
+
   // ------------------------------------------------------------ the living ice
 
   private looseAt(x: number, y: number, tile: number): FallingTile {
@@ -476,7 +675,7 @@ export class GameScene extends Phaser.Scene {
     let f = this.loose.get(key);
     if (!f) {
       // While it shakes it covers its own tile, so it shows the whole tile.
-      const img = this.add.image(x * TS, y * TS, 'tiles', tileFrame(this, frameFor(this.session.world, x, y, tile))).setOrigin(0).setDepth(4.2);
+      const img = this.add.image(x * TS, y * TS, tilesKey(), tileFrame(this, frameFor(this.session.world, x, y, tile))).setOrigin(0).setDepth(4.2);
       f = { x, y: y * TS, vy: 0, img, falling: false, born: this.time.now };
       this.loose.set(key, f);
     }
@@ -607,7 +806,7 @@ export class GameScene extends Phaser.Scene {
       let s = this.peerSprites.get(p.id);
       if (!s) {
         s = {
-          rig: this.add.sprite(0, 0, `rig${p.paint}`, 'idle0').setDepth(4.5),
+          rig: this.add.sprite(0, 0, rigKey(p.paint), 'idle0').setDepth(4.5),
           flame: this.add.image(0, 0, 'flame', 'f0').setDepth(4.4),
           chute: this.add.image(0, 0, 'chute').setOrigin(0.5, 1).setDepth(4.6).setVisible(false),
           tag: this.label(p.name, '#cfe6ff', 6).setOrigin(0.5, 1).setDepth(8).setAlpha(0.85),
@@ -617,7 +816,7 @@ export class GameScene extends Phaser.Scene {
         this.peerSprites.set(p.id, s);
       }
       if (s.paint !== p.paint) {
-        s.rig.setTexture(`rig${p.paint}`);
+        s.rig.setTexture(rigKey(p.paint));
         s.paint = p.paint;
       }
       const stuck = (p.flags & RIG_STALLED) > 0 && !(p.flags & RIG_WRECKED);
@@ -1125,6 +1324,6 @@ export class GameScene extends Phaser.Scene {
   }
 
   setPaint(i: number): void {
-    this.rig.setTexture(`rig${i}`, this.rig.frame.name);
+    this.rig.setTexture(rigKey(i), this.rig.frame.name);
   }
 }

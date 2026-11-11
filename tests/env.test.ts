@@ -3,6 +3,7 @@ import { ENV, Environment } from '../src/sim/env';
 import { newPlayer, placeRig, RIG_H, type Player } from '../src/sim/player';
 import { STEP, noInput, step, useItem, type Input, type SimEvent } from '../src/sim/rig';
 import { L, T, isMineral, isSolid } from '../src/sim/tiles';
+import { DAY_LENGTH, dayNumber, dayPart, dayPhase, daylight } from '../src/sim/daytime';
 import { BLIZZARD, STEAM, WEATHER_SLOT, ambientTemp, blizzardAt, ventActive } from '../src/sim/weather';
 import { SKY, World } from '../src/sim/world';
 
@@ -290,5 +291,44 @@ describe('flares', () => {
     expect(useItem(p, w, 'flare', ev)).toBe(true);
     expect(p.items.flare).toBe(1);
     expect(ev.find((e) => e.t === 'flare')).toMatchObject({ x: x + 0.5 });
+  });
+});
+
+describe('day and night', () => {
+  it('counts days from dayStart, an hour each', () => {
+    const w = new World(7, W);
+    w.dayStart = 1000;
+    w.time = 1000;
+    expect(dayNumber(w)).toBe(1);
+    expect(dayPhase(w)).toBe(0);
+    w.time = 1000 + DAY_LENGTH - 0.5;
+    expect(dayNumber(w)).toBe(1);
+    w.time = 1000 + DAY_LENGTH;
+    expect(dayNumber(w)).toBe(2);
+    w.time = 1000 + DAY_LENGTH * 6.5;
+    expect(dayNumber(w)).toBe(7);
+    expect(dayPhase(w)).toBeCloseTo(0.5);
+    // A clock that's slightly behind never shows day 0.
+    w.time = 990;
+    expect(dayNumber(w)).toBe(1);
+    expect(dayPhase(w)).toBe(0);
+  });
+
+  it('runs sunrise, day, dusk, night', () => {
+    // 40 minutes of day, 20 of night.
+    expect(DAY_LENGTH).toBe(3600);
+    const at = (minutes: number) => (minutes * 60) / DAY_LENGTH;
+    expect(dayPart(at(0))).toBe('Dawn');
+    expect(dayPart(at(2))).toBe('Day');
+    expect(daylight(at(20))).toBe(1);
+    expect(dayPart(at(38))).toBe('Day');
+    expect(dayPart(at(40))).toBe('Dusk');
+    expect(daylight(at(40))).toBeCloseTo(0.5);
+    expect(dayPart(at(42))).toBe('Night');
+    expect(daylight(at(50))).toBe(0);
+    expect(dayPart(at(58))).toBe('Night');
+    expect(dayPart(at(59.5))).toBe('Dawn');
+    // Light never jumps: dawn and dusk take three minutes each.
+    for (let s = 0; s < DAY_LENGTH; s += 10) expect(Math.abs(daylight((s + 10) / DAY_LENGTH) - daylight(s / DAY_LENGTH))).toBeLessThan(0.06);
   });
 });

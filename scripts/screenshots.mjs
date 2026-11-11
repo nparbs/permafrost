@@ -5,7 +5,8 @@ import fs from 'node:fs';
 
 const URL = process.env.URL ?? 'http://localhost:5173/';
 const CHROME = process.env.CHROME ?? 'C:/Program Files/Google/Chrome/Application/chrome.exe';
-fs.mkdirSync('shots', { recursive: true });
+const OUT = process.env.OUT ?? 'shots';
+fs.mkdirSync(OUT, { recursive: true });
 
 const scenarios = process.argv.slice(2);
 const want = (s) => !scenarios.length || scenarios.includes(s);
@@ -18,7 +19,11 @@ async function open(viewport, opts = {}) {
   page.on('pageerror', (e) => errors.push(String(e)));
   page.on('console', (m) => { if (m.type() === 'error') errors.push(m.text()); });
   await page.goto(URL);
-  await page.evaluate(() => localStorage.clear());
+  // GFX=low checks the low graphics setting; the default is high.
+  await page.evaluate((gfx) => {
+    localStorage.clear();
+    if (gfx) localStorage.setItem('permafrost.gfx', gfx);
+  }, process.env.GFX ?? '');
   await page.reload();
   await page.waitForTimeout(1200);
   return page;
@@ -26,7 +31,7 @@ async function open(viewport, opts = {}) {
 
 const wait = (page, ms) => page.waitForTimeout(ms);
 const hold = async (page, key, ms) => { await page.keyboard.down(key); await wait(page, ms); await page.keyboard.up(key); };
-const shot = async (page, name) => { await page.screenshot({ path: `shots/${name}.png` }); console.log('shot', name); };
+const shot = async (page, name) => { await page.screenshot({ path: `${OUT}/${name}.png` }); console.log('shot', name); };
 
 /** Carve a pocket at depth d (tiles) and drop the rig into it. */
 async function jump(page, d, opts = {}) {
@@ -256,6 +261,33 @@ if (want('living')) {
   });
   await wait(page, 300);
   await shot(page, '51-shop');
+}
+
+if (want('daynight')) {
+  // The day and night cycle at the station: morning, noon, dusk, night, then the next sunrise.
+  for (const gfx of ['high', 'low']) {
+    const page = await open({ width: 1280, height: 720 });
+    page.on('dialog', (d) => d.accept());
+    await page.evaluate((gfx) => localStorage.setItem('permafrost.gfx', gfx), gfx);
+    await page.reload();
+    await wait(page, 1200);
+    await page.getByText(/offline game|Play offline/).click();
+    await page.waitForFunction(() => window.pf.cutscene, null, { timeout: 5000 }).catch(() => {});
+    await page.evaluate(() => window.pf.skip());
+    await wait(page, 500);
+    await hold(page, 'ArrowUp', 500);
+    await shot(page, `60-day-${gfx}-1-morning`);
+    for (const [name, secs] of [['2-noon', 1200], ['3-dusk', 1200], ['4-night', 600]]) {
+      await page.evaluate((secs) => window.pf.shiftClock(secs), secs);
+      await wait(page, 400);
+      await shot(page, `60-day-${gfx}-${name}`);
+    }
+    await page.evaluate(() => window.pf.shiftClock(598));
+    await wait(page, 3500);
+    await shot(page, `60-day-${gfx}-5-sunrise-day-2`);
+    const hud = await page.evaluate(() => document.querySelector('.readout .day').textContent);
+    if (!/^Day 2/.test(hud)) errors.push(`the HUD should say Day 2 after one full day, got "${hud}"`);
+  }
 }
 
 await browser.close();

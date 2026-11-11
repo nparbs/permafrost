@@ -99,6 +99,8 @@ export class LocalSession implements GameSession {
 
   static fresh(seed = (Math.random() * 2 ** 31) | 0): LocalSession {
     const world = new World(seed, SOLO_WIDTH);
+    // A new game starts at sunrise on day 1.
+    world.dayStart = Date.now() / 1000;
     return new LocalSession(world, newPlayer(world));
   }
 

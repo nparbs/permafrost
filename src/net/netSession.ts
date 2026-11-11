@@ -76,6 +76,8 @@ export class NetSession implements GameSession {
     this.count = w.online;
     this.clockSkew = (w.now ?? Date.now()) - Date.now();
     this.world.time = (Date.now() + this.clockSkew) / 1000;
+    // An older server doesn't say when day 1 began: then it starts now.
+    this.world.dayStart = w.world.started != null ? w.world.started / 1000 : this.world.time;
     this.world.rescue = this.count > 1;
     for (const p of w.peers) this.addPeer(p);
     conn.onMessage = (m) => this.onMessage(m);

@@ -180,6 +180,17 @@ kbd {
   font-size: 11px;
   color: var(--dim);
 }
+.readout .day {
+  font-size: 10px;
+  color: #ffe9a8;
+}
+.readout .day.night {
+  color: #9fb8ff;
+}
+.readout .day.dawn,
+.readout .day.dusk {
+  color: #ffb27a;
+}
 .readout .temp.cold {
   color: #9fe8ff;
   animation: blink 0.8s steps(2) infinite;

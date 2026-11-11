@@ -185,6 +185,34 @@ describe('server', () => {
   });
 });
 
+describe('days', () => {
+  it('only pass while somebody is online, and survive a restart', () => {
+    const lab = new Lab();
+    /** Seconds since day 1 began, as a joining miner is told. The session then runs its own clock from there. */
+    const age = (j: ReturnType<Lab['join']>) => j.session!.world.time - j.session!.world.dayStart;
+    const a = lab.join({ hello: { name: 'Early' } });
+    expect(age(a)).toBeCloseTo(0, 0);
+    lab.run([a.session!], 600); // 10 s online
+    expect(lab.game.dayClock()).toBeCloseTo(10000, -2);
+    lab.game.drop(a.client);
+    lab.run([], 6000); // 100 s with nobody on
+    expect(lab.game.dayClock()).toBeCloseTo(10000, -2);
+    const b = lab.join({ hello: { name: 'Late' } });
+    expect(age(b)).toBeCloseTo(10, 0);
+    lab.run([b.session!], 300);
+    // A second miner joining mid-way gets the same clock.
+    const c = lab.join({ hello: { name: 'Third' } });
+    expect(age(c)).toBeCloseTo(15, 0);
+    // One leaving doesn't stop it while the other stays.
+    lab.game.drop(b.client);
+    lab.run([c.session!], 300);
+    expect(lab.game.dayClock()).toBeCloseTo(20000, -2);
+    lab.game.save();
+    const again = new Game(lab.store, 'test', 80, 999);
+    expect(again.dayClock()).toBeCloseTo(20000, -2);
+  });
+});
+
 describe('prediction', () => {
   /** Drive left off the pad, then dig down; track the largest visible correction. */
   function dig(lag: number, jitter: number) {

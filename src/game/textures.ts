@@ -30,6 +30,19 @@ const CORNER = 6;
 
 type RGB = [number, number, number];
 
+/** True while the high-detail art is being painted. The painters check it. */
+let HD = false;
+/** Which art the scene is showing now. */
+let showHD = false;
+/** The tileset texture in use. */
+export const tilesKey = (): string => (showHD ? 'tiles-hd' : 'tiles');
+/** The rig texture for a paint colour, in the art in use. */
+export const rigKey = (paint: number): string => `${showHD ? 'righd' : 'rig'}${paint}`;
+/** How much darker tunnel backs are in the high-detail art, so the rig and the ore stand out. */
+const BACK_DIM = 0.24;
+/** The tunnel-back colour of a layer in the art in use. */
+export const backColor = (layer: number): RGB => (showHD ? shade(LAYER_PAL[layer].back, -BACK_DIM) : LAYER_PAL[layer].back);
+
 const hex = (h: string): RGB => {
   const n = parseInt(h.slice(1), 16);
   return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
@@ -98,6 +111,22 @@ class Px {
   rect(x: number, y: number, w: number, h: number, c: RGB, a = 255) {
     for (let j = y; j < y + h; j++) for (let i = x; i < x + w; i++) this.set(i, j, c, a);
   }
+  alpha(x: number, y: number): number {
+    if (x < 0 || y < 0 || x >= this.w || y >= this.h) return 0;
+    return this.img.data[(y * this.w + x) * 4 + 3];
+  }
+}
+
+/** Draw a one-pixel outline around whatever is painted inside a box. */
+function outline(px: Px, x0: number, y0: number, w: number, h: number, c: RGB, a = 255) {
+  const solid = (x: number, y: number) => x >= x0 && y >= y0 && x < x0 + w && y < y0 + h && px.alpha(x, y) > 200;
+  const edge: [number, number][] = [];
+  for (let y = y0; y < y0 + h; y++) {
+    for (let x = x0; x < x0 + w; x++) {
+      if (!solid(x, y) && (solid(x - 1, y) || solid(x + 1, y) || solid(x, y - 1) || solid(x, y + 1))) edge.push([x, y]);
+    }
+  }
+  for (const [x, y] of edge) px.set(x, y, c, a);
 }
 
 // ---------------------------------------------------------------- tiles
@@ -299,8 +328,9 @@ function paintBack(px: Px, ox: number, oy: number, layer: number, above: boolean
   for (let y = 0; y < TS; y++) {
     for (let x = 0; x < TS; x++) {
       const m = valueNoise(x / 4, y / 4, 600 + layer);
-      let c = mix(p.back, shade(p.back, -0.35), m * 0.7);
-      if (hash3(x, y, 610 + layer) > 0.96) c = shade(p.back, 0.12);
+      const back = HD ? shade(p.back, -BACK_DIM) : p.back;
+      let c = mix(back, shade(back, -0.35), m * 0.7);
+      if (hash3(x, y, 610 + layer) > 0.96) c = shade(back, 0.12);
       let dark = 0;
       if (above && y < 5) dark = Math.max(dark, ((5 - y) / 5) * 0.55);
       if (left && x < 3) dark = Math.max(dark, ((3 - x) / 3) * 0.4);
@@ -367,6 +397,21 @@ function paintEmbedded(px: Px, ox: number, oy: number, kind: number, layer: numb
     paintBoulder(px, ox, oy, layer);
     return;
   }
+  if (!HD) {
+    paintMineral(px, ox, oy, kind);
+    return;
+  }
+  // High detail: a dark edge around the ore, so it reads against any ground.
+  const s = new Px(TS, TS);
+  paintMineral(s, 0, 0, kind);
+  outline(s, 0, 0, TS, TS, shade(hex(MINERALS[kind].color), -0.72), 215);
+  for (let y = 0; y < TS; y++) for (let x = 0; x < TS; x++) {
+    const a = s.alpha(x, y);
+    if (a) px.set(ox + x, oy + y, s.get(x, y), a);
+  }
+}
+
+function paintMineral(px: Px, ox: number, oy: number, kind: number) {
   const m = MINERALS[kind];
   const col = hex(m.color);
   const light = hex(m.light);
@@ -457,14 +502,22 @@ function paintOver(px: Px, dst: [number, number], ground: [number, number], back
       }
       if (state[k] === 2) continue;
       let d = 9;
+      // Whether the nearest bit of tunnel is above this pixel: then it's a floor, and it catches the light.
+      let floor = false;
       for (let j = -M; j <= M; j++) for (let i = -M; i <= M; i++) {
-        if (state[(v + M + j) * N + u + M + i] === 1) d = Math.min(d, Math.hypot(i, j));
+        if (state[(v + M + j) * N + u + M + i] !== 1) continue;
+        const h = Math.hypot(i, j);
+        if (h < d) {
+          d = h;
+          floor = j < 0 && -j >= Math.abs(i);
+        }
       }
       const fill = changed[k] > 0;
       const base = px.get(ground[0] + tx, ground[1] + ty);
       if (d < 1.5) px.set(x, y, rim);
       else if (d < 2.5) {
-        if (fill) px.set(x, y, mix(base, rim, 0.45));
+        if (HD && floor) px.set(x, y, mix(base, p.light, 0.5));
+        else if (fill) px.set(x, y, mix(base, rim, 0.45));
         else px.set(x, y, [0, 0, 0], 70);
       } else if (fill) px.set(x, y, base);
       else continue;
@@ -598,12 +651,75 @@ function paintRig(px: Px, ox: number, mode: 'idle' | 'side' | 'down', anim: numb
   }
 }
 
-function buildRig(paint: string): HTMLCanvasElement {
-  const px = new Px(RIG_FRAME * RIG_FRAMES.length, RIG_FRAME);
+/** The high-detail rig has a dark outline, so its frames are two pixels bigger each way. */
+const RIG_PAD = 2;
+export const RIG_FRAME_HD = RIG_FRAME + RIG_PAD * 2;
+
+/** The same rig on the same pixel grid, with more shading, brighter paint and a dark outline. */
+function paintRigHD(px: Px, fx: number, mode: 'idle' | 'side' | 'down', anim: number, paint: RGB) {
+  const ox = fx + RIG_PAD;
+  const oy = RIG_PAD;
+  const dark = shade(paint, -0.42);
+  const light = shade(paint, 0.32);
+  const hi = shade(paint, 0.66);
+  const P = (x: number, y: number, c: RGB) => px.set(ox + x, oy + y, c);
+  const R = (x: number, y: number, w: number, h: number, c: RGB) => px.rect(ox + x, oy + y, w, h, c);
+  // exhaust stack
+  R(5, 1, 2, 6, hex('#6c7482'));
+  R(5, 2, 1, 5, hex('#a2aab8'));
+  R(5, 1, 2, 1, hex('#2e323a'));
+  // cab
+  R(7, 3, 7, 5, dark);
+  R(7, 3, 7, 1, paint);
+  R(8, 4, 5, 3, hex('#7fd8f8'));
+  R(8, 4, 3, 1, hex('#ffffff'));
+  P(8, 5, hex('#d6f6ff'));
+  R(11, 6, 2, 1, hex('#3f9cc8'));
+  P(12, 5, hex('#5ab8e0'));
+  // beacon on the roof (the scene makes it blink)
+  P(12, 2, hex('#ffb020'));
+  // chassis
+  R(4, 7, 12, 5, paint);
+  R(4, 7, 12, 1, hi);
+  R(4, 8, 12, 1, light);
+  R(4, 11, 12, 1, dark);
+  for (const x of [6, 9, 12]) P(x, 9, dark);
+  // headlamp
+  R(14, 8, 2, 2, hex('#fff8c8'));
+  P(14, 9, hex('#ffd45a'));
+  // tracks
+  R(5, 12, 10, 4, hex('#1c1e26'));
+  R(4, 13, 12, 2, hex('#1c1e26'));
+  R(5, 12, 10, 1, hex('#565c68'));
+  for (let i = 0; i < 4; i++) {
+    R(5 + i * 3, 13, 2, 2, hex('#9ea4b2'));
+    P(5 + i * 3, 13, hex('#e6eaf2'));
+  }
+  for (let x = 5; x < 15; x++) if ((x + anim) % 2 === 0) P(x, 15, hex('#5a606c'));
+  const bitA = hex('#f2f5f9');
+  const bitB = hex('#8a93a2');
+  const steel = hex('#6c7482');
+  if (mode === 'down') {
+    R(9, 16, 2, 1, steel);
+    const rows: [number, number, number][] = [[17, 7, 6], [18, 8, 4], [19, 9, 2]];
+    for (const [y, x0, w] of rows) for (let x = x0; x < x0 + w; x++) P(x, y, (x + anim) % 2 ? bitA : bitB);
+  } else {
+    R(16, 8, 1, 3, steel);
+    const len = mode === 'side' ? 3 : 1;
+    const cols: [number, number, number][] = [[17, 7, 5], [18, 8, 3], [19, 9, 1]];
+    for (const [x, y0, h] of cols.slice(0, len)) for (let y = y0; y < y0 + h; y++) P(x, y, (y + anim) % 2 ? bitA : bitB);
+  }
+  outline(px, fx, 0, RIG_FRAME_HD, RIG_FRAME_HD, hex('#080b12'));
+}
+
+function buildRig(paint: string, hd = false): HTMLCanvasElement {
+  const size = hd ? RIG_FRAME_HD : RIG_FRAME;
+  const px = new Px(size * RIG_FRAMES.length, size);
   const col = hex(paint);
   RIG_FRAMES.forEach((name, i) => {
     const mode = name.startsWith('idle') ? 'idle' : name.startsWith('side') ? 'side' : 'down';
-    paintRig(px, i * RIG_FRAME, mode, Number(name.slice(-1)), col);
+    if (hd) paintRigHD(px, i * size, mode, Number(name.slice(-1)), col);
+    else paintRig(px, i * size, mode, Number(name.slice(-1)), col);
   });
   return toCanvas(px);
 }
@@ -824,16 +940,20 @@ function buildBuilding(key: BuildingKey): HTMLCanvasElement {
 
 // ---------------------------------------------------------------- sky
 
-function buildSky(): HTMLCanvasElement {
+/** Night, top to bottom. */
+const SKY_NIGHT: [number, string][] = [[0, '#04060f'], [0.45, '#0d1b3a'], [0.8, '#1d3f63'], [1, '#3a6a8a']];
+/** A pale polar day. */
+const SKY_DAY: [number, string][] = [[0, '#2f66a8'], [0.5, '#6aa4d6'], [0.85, '#b4d8ee'], [1, '#e2f0f8']];
+/** Dawn and dusk: laid over the others, clear at the top and warm at the horizon. */
+const SKY_DUSK: [number, string][] = [[0, 'rgba(70,40,110,0)'], [0.4, 'rgba(120,60,130,0.35)'], [0.75, 'rgba(240,120,90,0.75)'], [1, 'rgba(255,196,120,0.95)']];
+
+function buildSky(stops: [number, string][] = SKY_NIGHT): HTMLCanvasElement {
   const c = document.createElement('canvas');
   c.width = 4;
   c.height = 160;
   const g = c.getContext('2d')!;
   const grad = g.createLinearGradient(0, 0, 0, 160);
-  grad.addColorStop(0, '#04060f');
-  grad.addColorStop(0.45, '#0d1b3a');
-  grad.addColorStop(0.8, '#1d3f63');
-  grad.addColorStop(1, '#3a6a8a');
+  for (const [at, col] of stops) grad.addColorStop(at, col);
   g.fillStyle = grad;
   g.fillRect(0, 0, 4, 160);
   return c;
@@ -868,11 +988,11 @@ function buildAurora(): HTMLCanvasElement {
   return toCanvas(px);
 }
 
-function buildMountains(): HTMLCanvasElement {
+function buildMountains(day = false): HTMLCanvasElement {
   const px = new Px(256, 80);
-  const far = hex('#1b2a46');
-  const near = hex('#26385a');
-  const snow = hex('#9fb4d0');
+  const far = hex(day ? '#7f9cc0' : '#1b2a46');
+  const near = hex(day ? '#5f7ea8' : '#26385a');
+  const snow = hex(day ? '#f4f9ff' : '#9fb4d0');
   const ridge = (x: number, seed: number, base: number, amp: number) =>
     base - (valueNoise(x / 22, 0.5, seed) * amp + valueNoise(x / 7, 0.5, seed + 1) * amp * 0.3);
   // tileable: noise wraps by blending the ends
@@ -906,6 +1026,98 @@ function buildLight(): HTMLCanvasElement {
   return c;
 }
 
+/** The headlamp's beam: a soft cone that opens to the right from its left edge. */
+function buildBeam(): HTMLCanvasElement {
+  const c = document.createElement('canvas');
+  c.width = 64;
+  c.height = 48;
+  const g = c.getContext('2d')!;
+  const grad = g.createLinearGradient(0, 0, 64, 0);
+  grad.addColorStop(0, 'rgba(255,255,255,0.9)');
+  grad.addColorStop(0.35, 'rgba(255,255,255,0.4)');
+  grad.addColorStop(1, 'rgba(255,255,255,0)');
+  g.fillStyle = grad;
+  // Stacked wedges, so the cone is brightest along its middle.
+  for (const half of [22, 15, 8]) {
+    g.globalAlpha = 0.34;
+    g.beginPath();
+    g.moveTo(0, 23);
+    g.lineTo(64, 24 - half);
+    g.lineTo(64, 24 + half);
+    g.lineTo(0, 25);
+    g.closePath();
+    g.fill();
+  }
+  return c;
+}
+
+/** A small four-point glint for ore, 5x5. */
+function buildTwinkle(): HTMLCanvasElement {
+  const px = new Px(5, 5);
+  const w: RGB = [255, 255, 255];
+  px.set(2, 2, w);
+  for (const [x, y] of [[1, 2], [3, 2], [2, 1], [2, 3]]) px.set(x, y, w, 190);
+  for (const [x, y] of [[0, 2], [4, 2], [2, 0], [2, 4]]) px.set(x, y, w, 90);
+  return toCanvas(px);
+}
+
+/** The moon: a pale disc with a few craters, lit from the upper left. */
+function buildMoon(): HTMLCanvasElement {
+  const S = 22;
+  const px = new Px(S, S);
+  const lit = hex('#e4eefc');
+  const mid = hex('#b9c8e2');
+  const dim = hex('#8496b8');
+  for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) {
+    const dx = x - 10.5;
+    const dy = y - 10.5;
+    if (Math.hypot(dx, dy) > 10.2) continue;
+    const k = (dx + dy) / 15 + valueNoise(x / 3, y / 3, 1701) * 0.5;
+    px.set(x, y, k > 0.75 ? dim : k > 0.3 ? mid : lit);
+  }
+  for (const [cx, cy, cr] of [[7, 8, 2.2], [13, 13, 2.8], [12, 6, 1.4], [6, 14, 1.3]]) {
+    for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) {
+      const r = Math.hypot(x - cx, y - cy);
+      if (r < cr && px.alpha(x, y)) px.set(x, y, r > cr - 1 && x + y < cx + cy ? dim : mid);
+    }
+  }
+  return toCanvas(px);
+}
+
+/** The sun: a small pale disc. The scene adds its glow. */
+function buildSun(): HTMLCanvasElement {
+  const S = 14;
+  const px = new Px(S, S);
+  for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) {
+    const r = Math.hypot(x - 6.5, y - 6.5);
+    if (r < 6.2) px.set(x, y, r < 4.6 ? hex('#fffdf0') : hex('#ffe9a8'));
+  }
+  return toCanvas(px);
+}
+
+/** A few bright stars with points, for a layer that twinkles. */
+function buildBrightStars(): HTMLCanvasElement {
+  const px = new Px(128, 96);
+  const c: RGB = [235, 242, 255];
+  for (let i = 0; i < 16; i++) {
+    const x = 2 + Math.floor(hash3(i, 1, 43) * 124);
+    const y = 2 + Math.floor(hash3(i, 2, 43) * 78);
+    px.set(x, y, c);
+    for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) px.set(x + dx, y + dy, c, 110);
+  }
+  return toCanvas(px);
+}
+
+/** A soft shadow for under a rig, 16x4. */
+function buildShadow(): HTMLCanvasElement {
+  const px = new Px(16, 4);
+  for (let y = 0; y < 4; y++) for (let x = 0; x < 16; x++) {
+    const r = Math.hypot((x - 7.5) / 8, (y - 1.5) / 2.2);
+    if (r < 1) px.set(x, y, [0, 0, 0], Math.floor((1 - r) * 190));
+  }
+  return toCanvas(px);
+}
+
 /** A flare stick, 4x6. */
 function buildFlare(): HTMLCanvasElement {
   const px = new Px(4, 6);
@@ -930,7 +1142,7 @@ function buildPuff(): HTMLCanvasElement {
 
 /** The tileset frame for a tile index, registered on first use, for sprites that look like tiles. */
 export function tileFrame(scene: Phaser.Scene, index: number): string {
-  const tex = scene.textures.get('tiles');
+  const tex = scene.textures.get(tilesKey());
   const name = `t${index}`;
   if (!tex.has(name)) tex.add(name, 0, (index % COLS) * TS, Math.floor(index / COLS) * TS, TS, TS);
   return name;
@@ -955,8 +1167,32 @@ function buildDot(size: number, color = '#ffffff'): HTMLCanvasElement {
 
 export const PAINTS = ['#f2a81d', '#e24a3a', '#3a8ae2', '#46c86a', '#b05ae0', '#e8e8f0'];
 
-/** Register every texture with Phaser once. */
-export function makeTextures(scene: Phaser.Scene): void {
+/** The high-detail art, built the first time it's asked for. */
+function makeHD(scene: Phaser.Scene): void {
+  const tx = scene.textures;
+  if (tx.exists('tiles-hd')) return;
+  HD = true;
+  try {
+    tx.addCanvas('tiles-hd', buildTileset());
+    PAINTS.forEach((paint, i) => {
+      const t = tx.addCanvas(`righd${i}`, buildRig(paint, true))!;
+      RIG_FRAMES.forEach((name, f) => t.add(name, 0, f * RIG_FRAME_HD, 0, RIG_FRAME_HD, RIG_FRAME_HD));
+    });
+  } finally {
+    HD = false;
+  }
+  tx.addCanvas('beam', buildBeam());
+  tx.addCanvas('twinkle', buildTwinkle());
+  tx.addCanvas('moon', buildMoon());
+  tx.addCanvas('sun', buildSun());
+  tx.addCanvas('stars2', buildBrightStars());
+  tx.addCanvas('shadow', buildShadow());
+}
+
+/** Register every texture with Phaser once, and pick which art the scene shows. */
+export function makeTextures(scene: Phaser.Scene, high = false): void {
+  showHD = high;
+  if (high) makeHD(scene);
   const tx = scene.textures;
   if (tx.exists('tiles')) return;
   tx.addCanvas('tiles', buildTileset());
@@ -969,6 +1205,9 @@ export function makeTextures(scene: Phaser.Scene): void {
   flame.add('f1', 0, 8, 0, 8, 8);
   for (const key of ['fuel', 'assay', 'shop', 'repair', 'supply'] as BuildingKey[]) tx.addCanvas(`b-${key}`, buildBuilding(key));
   tx.addCanvas('sky', buildSky());
+  tx.addCanvas('sky-day', buildSky(SKY_DAY));
+  tx.addCanvas('sky-dusk', buildSky(SKY_DUSK));
+  tx.addCanvas('mountains-day', buildMountains(true));
   tx.addCanvas('stars', buildStars());
   tx.addCanvas('aurora', buildAurora());
   tx.addCanvas('mountains', buildMountains());

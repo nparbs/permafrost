@@ -70,6 +70,10 @@ const clampPaint = (v: unknown) => (typeof v === 'number' && Number.isInteger(v)
 export class Game {
   readonly world: World;
   readonly season: number;
+  /** Milliseconds the world has had somebody online, up to the last time it emptied. Days run on this. */
+  private played: number;
+  /** When the world last went from empty to occupied, or null while it's empty. */
+  private occupiedAt: number | null = null;
   private clients = new Set<Client>();
   private byAccount = new Map<string, Client>();
   private tickNo = 0;
@@ -90,7 +94,14 @@ export class Game {
     this.world.dirty.length = 0;
     this.season = row.season;
     this.world.time = this.now() / 1000;
+    this.played = row.played;
+    this.world.dayStart = (this.now() - this.played) / 1000;
     this.env = new Environment(this.world);
+  }
+
+  /** Milliseconds of days gone by. The clock only runs while somebody is online. */
+  dayClock(): number {
+    return this.played + (this.occupiedAt === null ? 0 : this.now() - this.occupiedAt);
   }
 
   get online(): number {
@@ -169,6 +180,11 @@ export class Game {
     c.player = p;
     c.lastInputAt = this.now();
     const peers = [...this.clients].map((o) => o.info());
+    if (!this.clients.size) {
+      // First one in: the day clock picks up where it stopped.
+      this.occupiedAt = this.now();
+      this.world.dayStart = (this.occupiedAt - this.played) / 1000;
+    }
     this.clients.add(c);
     this.byAccount.set(c.id, c);
     c.send({
@@ -176,7 +192,7 @@ export class Game {
       v: PROTOCOL_VERSION,
       token,
       you: c.info(),
-      world: { id: this.worldId, seed: this.world.seed, width: this.world.w, season: this.season, diffs: encodeDiffs(this.world.diffs) },
+      world: { id: this.worldId, seed: this.world.seed, width: this.world.w, season: this.season, started: this.now() - this.dayClock(), diffs: encodeDiffs(this.world.diffs) },
       player: p,
       peers,
       online: this.clients.size,
@@ -379,6 +395,12 @@ export class Game {
     if (!this.clients.has(c)) return;
     this.savePlayer(c);
     this.clients.delete(c);
+    if (!this.clients.size && this.occupiedAt !== null) {
+      // Last one out: the day clock stops until somebody comes back.
+      this.played = this.dayClock();
+      this.occupiedAt = null;
+      this.store.savePlayed(this.worldId, this.played);
+    }
     if (this.byAccount.get(c.id) === c) this.byAccount.delete(c.id);
     this.broadcast({ t: 'leave', id: c.id });
   }
@@ -393,6 +415,7 @@ export class Game {
 
   save(): void {
     this.lastSave = this.now();
+    if (this.occupiedAt !== null) this.store.savePlayed(this.worldId, this.dayClock());
     if (this.worldDirty) {
       this.store.saveWorld(this.worldId, this.world.diffs);
       this.worldDirty = false;

@@ -1,10 +1,17 @@
 # Handoff
 
-Last updated 2026-11-11 (v0.3.3 live: 5 of each item at most, Recall Beacon $2,500; v0.3.2 before it: deaths cost only the ore, death and arrival scenes, Space at the station, cheaper early upgrades). Read ROADMAP.md for the plan and the decisions the user has made, and CLAUDE.md for the working rules.
+Last updated 2026-11-11 (v0.3.4 live: Graphics high/low and a day and night cycle; v0.3.3 before it: 5 of each item at most, Recall Beacon $2,500; v0.3.2 before it: deaths cost only the ore, death and arrival scenes, Space at the station, cheaper early upgrades). Read ROADMAP.md for the plan and the decisions the user has made, and CLAUDE.md for the working rules.
 
 ## Where things stand
 
-- **v0.3.3 is live** at https://permafrost.parbs.online (shipped 2026-11-11). It only changes two numbers in `src/sim/items.ts`: `ITEM_STACK` is 5 (was 9) and the Recall Beacon costs $2,500 (was $800). Saved rigs holding more than 5 of something keep them; `buyItem` just answers `max` until they're under the limit. No protocol change.
+- **v0.3.4 is live** at https://permafrost.parbs.online (shipped 2026-11-11). See the v0.3.4 section of ROADMAP.md. The details:
+  - Graphics: `src/game/gfx.ts` holds the setting (`permafrost.gfx` in localStorage, high by default). `makeTextures(scene, high)` builds a second tileset and rig set (`tiles-hd`, `righd0..5`) the first time High is used; painters check the `HD` flag, and `tilesKey()`/`rigKey()` pick the art in use. In `GameScene`, everything extra sits behind `this.high`: the `glow` RenderTexture (ADD blend, above the dark) for coloured light, the halo, shadow, exhaust, glints, sun and moon, and a camera vignette. Switching restarts the scene with the same session; the scene only subscribes to a session once (`heard`). Low must stay as it is, and High must not show more of the dark than Low.
+  - Day and night: `src/sim/daytime.ts` (40 min day, 20 min night, 3 min twilights) works from `world.time - world.dayStart`. `GameScene.syncSky` fades the day sky, dusk colours and day mountains over the night ones, and a `night` rectangle dims the surface. The HUD line and the sunrise toast are in `ui.ts` and `main.ts`.
+  - Days only count while somebody plays. Server: `Game.dayClock()` is `played` (saved in `worlds.played`, a column added on start-up) plus the time since the world was last occupied; the welcome's `world.started` is `now - dayClock()`. Offline: the save stores `dayStart`, and loading moves it forward by the time the game was closed.
+  - Checked: 78 tests, typecheck, builds, `npm run gfxcheck`, `npm run cinecheck`, `npm run mp` (before the day-clock change), and screenshots (`node scripts/screenshots.mjs daynight`). Not checked on a real phone.
+  - Open: whether night should affect play; whether phones should default to Low.
+
+- **v0.3.3 was live** at https://permafrost.parbs.online (shipped 2026-11-11). It only changes two numbers in `src/sim/items.ts`: `ITEM_STACK` is 5 (was 9) and the Recall Beacon costs $2,500 (was $800). Saved rigs holding more than 5 of something keep them; `buyItem` just answers `max` until they're under the limit. No protocol change.
 
 - **v0.3.2 is live** at https://permafrost.parbs.online (shipped 2026-11-10, commit 2a3ba64; /health reports 0.3.2). See the v0.3.2 section of ROADMAP.md for what it does and the choices the user made. The details:
   - Rules: `step()` in `rig.ts` handles an empty tank underground: burn a Fuel Cell (`reserve` event), else wreck with cause `fuel` if `world.rescue` is false, else stall. `world.rescue` is "another miner is online": the server sets it each tick, `NetSession` sets it from the online count, and offline it stays false. A stalled rig's fall speed is capped at `PHYS.chute`. `respawn()` in `station.ts` replaced `tow()`; `rescueFee` replaced `towFee`. `Rig.wreckedBy` carries the cause.

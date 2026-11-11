@@ -2,6 +2,7 @@
 
 import type { Sfx } from '../game/audio';
 import type { GameSession } from '../game/session';
+import { quality, type Quality } from '../game/gfx';
 import { PAINTS } from '../game/textures';
 import { CHAT_MAX, NAME_MAX, PAINT_COUNT, RIG_SOS, RIG_STALLED, RIG_WRECKED, cleanName } from '../net/protocol';
 import type { Action, ActResult } from '../sim/actions';
@@ -10,6 +11,7 @@ import { cargoCount, cargoValue, statsOf, type HurtCause } from '../sim/player';
 import { fuelToSurface, rigDepth, type Input } from '../sim/rig';
 import { AID_REACH, FUEL_PRICE, buildingAt, refuelCost, repairCost, rescueFee, saleLines } from '../sim/station';
 import { tempAtDepth } from '../sim/temperature';
+import { dayNumber, dayPart, dayPhase } from '../sim/daytime';
 import { ambientTemp, blizzardAt } from '../sim/weather';
 import { LAYERS, MINERALS } from '../sim/tiles';
 import { UPGRADES, UPGRADE_ORDER, type UpgradeKey } from '../sim/upgrades';
@@ -129,6 +131,8 @@ interface Hooks {
   float: (text: string, color: string) => void;
   /** The stalled player gave up: lose the rig and respawn. */
   giveUp: () => void;
+  /** Switch between the high and low graphics. */
+  setQuality: (q: Quality) => void;
 }
 
 interface Gauge {
@@ -144,6 +148,7 @@ export class UI {
   private cash: HTMLElement;
   private depth: HTMLElement;
   private temp: HTMLElement;
+  private day: HTMLElement;
   private onlineEl: HTMLElement;
   private toasts: HTMLElement;
   private banner: HTMLElement;
@@ -210,6 +215,7 @@ export class UI {
     this.cash = read.appendChild(el('div', 'cash'));
     this.depth = read.appendChild(el('div', 'depth'));
     this.temp = read.appendChild(el('div', 'temp'));
+    this.day = read.appendChild(el('div', 'day'));
     this.onlineEl = read.appendChild(el('div', 'online'));
     const btns = read.appendChild(el('div', 'hud-btns'));
     this.chatBtn = btns.appendChild(button('Chat', () => this.openChat(), 'menu-btn chat-btn'));
@@ -402,6 +408,9 @@ export class UI {
     this.setText(this.temp, storm ? `${t}°C · Blizzard` : `${t}°C`);
     this.temp.className = `temp ${r.cold ? 'cold' : r.hot ? 'hot' : ''}`;
     this.temp.title = `Your rig works from ${st.minTemp}°C to ${st.maxTemp}°C`;
+    const part = dayPart(dayPhase(w));
+    this.setText(this.day, `Day ${dayNumber(w)} · ${part}`);
+    this.day.className = `day ${part.toLowerCase()}`;
     this.setText(this.onlineEl, this.s.online ? `● ${this.s.onlineCount()} online` : 'Offline');
     this.root.classList.toggle('cold', r.cold);
     this.root.classList.toggle('hot', r.hot);
@@ -974,6 +983,10 @@ export class UI {
       }, 'wide'));
       box.appendChild(button(this.sfx.musicOn ? 'Music: on' : 'Music: off', () => {
         this.sfx.setMusic(!this.sfx.musicOn);
+        this.rerender();
+      }, 'wide'));
+      box.appendChild(button(quality() === 'high' ? 'Graphics: high' : 'Graphics: low', () => {
+        this.hooks.setQuality(quality() === 'high' ? 'low' : 'high');
         this.rerender();
       }, 'wide'));
       if (this.s.online && this.code) {

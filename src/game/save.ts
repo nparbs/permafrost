@@ -13,6 +13,8 @@ interface SaveData {
   player: unknown;
   diffs: [number, number][];
   at: number;
+  /** When day 1 began, in wall-clock seconds. Saves from before v0.3.4 don't have it. */
+  dayStart?: number;
 }
 
 export function hasSave(): boolean {
@@ -28,7 +30,7 @@ export function saveSession(s: LocalSession): void {
   const r = p.rig;
   // Don't save half a dig: put the rig back where the dig started.
   const player = r.drill ? { ...p, rig: { ...r, x: r.drill.sx, y: r.drill.sy, drill: null } } : p;
-  const data: SaveData = { v: 1, seed: s.world.seed, width: s.world.w, player, diffs: [...s.world.diffs], at: Date.now() };
+  const data: SaveData = { v: 1, seed: s.world.seed, width: s.world.w, player, diffs: [...s.world.diffs], at: Date.now(), dayStart: s.world.dayStart };
   try {
     localStorage.setItem(KEY, JSON.stringify(data));
   } catch {
@@ -45,6 +47,9 @@ export function loadSession(): LocalSession | null {
     const world = new World(data.seed, data.width);
     world.applyDiffs(data.diffs);
     world.dirty.length = 0;
+    // Offline, days only pass while the game is open: skip the time since the last save.
+    const now = Date.now() / 1000;
+    world.dayStart = typeof data.dayStart === 'number' ? Math.min(now, data.dayStart + Math.max(0, now - data.at / 1000)) : now;
     return new LocalSession(world, revivePlayer(world, data.player));
   } catch {
     return null;

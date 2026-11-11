@@ -16,6 +16,7 @@ npm run shots      # headless screenshots to shots/ (needs the dev server; URL=.
                    # scenarios: desktop, phone, dig (rounded tunnels), living (v0.3 hazards and light)
 npm run uicheck    # phone panels scroll by finger, stall options, minimap and map with two miners
 npm run cinecheck  # death and arrival scenes, respawns, Space at the station (offline)
+npm run gfxcheck   # the Graphics high/low switch, mid-game (offline; GFX=low npm run shots for Low screenshots)
 npm run soscheck   # two miners: stall, SOS arrow, give up; then an empty tank alone (needs the server)
 ```
 

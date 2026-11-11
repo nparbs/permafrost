@@ -4,11 +4,13 @@ import './ui/style.css';
 import Phaser from 'phaser';
 import { Sfx } from './game/audio';
 import { GameScene, type Cue, type SceneData } from './game/GameScene';
+import { setQuality } from './game/gfx';
 import { clearSave, hasSave, loadSession, prefs, saveSession } from './game/save';
 import { LocalSession, type GameSession, type SessionEvent } from './game/session';
 import { connect } from './net/connect';
 import { NetSession } from './net/netSession';
 import { PAINT_COUNT } from './net/protocol';
+import { dayNumber } from './sim/daytime';
 import { ITEMS, ITEM_ORDER } from './sim/items';
 import { cargoCount, cargoValue, statsOf, type HurtCause } from './sim/player';
 import { fuelToSurface, rigDepth, type Input } from './sim/rig';
@@ -58,6 +60,12 @@ const ui = new UI(sfx, {
   setName: (n) => prefs.set('name', n),
   float: (text, color) => scene()?.floatAtRig(text, color),
   giveUp: () => die('fuel'),
+  setQuality: (q) => {
+    setQuality(q);
+    // The scene rebuilds itself with the other art. The session carries on untouched.
+    scene()?.scene.restart({ session, onFrame, onCue } satisfies SceneData);
+    ui.toast(q === 'high' ? 'Graphics: high' : 'Graphics: low. Lighter on phones and older computers.', '', 2200);
+  },
 });
 
 function titleInfo(error?: string): TitleInfo {
@@ -91,6 +99,7 @@ function use(s: GameSession): void {
   cine = false;
   queued = null;
   homeWarned = false;
+  lastDay = 0;
   ui.setBusy(false);
   ui.hideDeath();
   scene()?.scene.restart({ session: s, onFrame, onCue } satisfies SceneData);
@@ -248,6 +257,8 @@ let wasScald = false;
 let wasStorm = false;
 /** The "just enough fuel to get home" warning went out on this trip down. */
 let homeWarned = false;
+/** The day the last frame was in, to announce sunrise. 0 until the first frame of a session. */
+let lastDay = 0;
 
 function onFrame(game: GameScene): void {
   const r = session.player.rig;
@@ -268,6 +279,9 @@ function onFrame(game: GameScene): void {
   sfx.thrust(r.thrusting && !idle);
   if (idle) return;
 
+  const today = dayNumber(session.world);
+  if (lastDay && today > lastDay) ui.toast(`Sunrise. <b>Day ${today}</b> at Rime Station.`, '', 2600);
+  lastDay = today;
   const now = performance.now();
   const st = statsOf(session.player);
   if (rigDepth(r) > 0.5 && r.fuel / st.tank < 0.15 && r.fuel > 0 && now - lastAlarm > 2500) {

@@ -39,6 +39,11 @@ export interface WorldInfo {
   seed: number;
   width: number;
   season: number;
+  /**
+   * When day 1 began, in ms on the server's clock. Days only pass while somebody is online, so
+   * the server moves this forward over any time the world sat empty.
+   */
+  started?: number;
   /** Changed tiles, packed by encodeDiffs. */
   diffs: string;
 }

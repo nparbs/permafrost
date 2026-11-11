@@ -17,6 +17,8 @@ export interface WorldRow {
   width: number;
   season: number;
   started: number;
+  /** Milliseconds this world has had somebody online. The day counter runs on it. */
+  played: number;
   diffs: [number, number][];
 }
 
@@ -85,6 +87,9 @@ export class Store {
         PRIMARY KEY (account, world)
       );
     `);
+    // Added in v0.3.4. A world from before starts its day count at zero.
+    const cols = this.db.prepare('PRAGMA table_info(worlds)').all() as { name: string }[];
+    if (!cols.some((c) => c.name === 'played')) this.db.exec('ALTER TABLE worlds ADD COLUMN played INTEGER NOT NULL DEFAULT 0');
   }
 
   create(name: string, paint: number): { account: Account; token: string } {
@@ -107,17 +112,21 @@ export class Store {
   }
 
   world(id: string): WorldRow | null {
-    const row = this.db.prepare('SELECT id, seed, width, season, started, diffs FROM worlds WHERE id = ?').get(id) as
-      | { id: string; seed: number; width: number; season: number; started: number; diffs: Uint8Array | null }
+    const row = this.db.prepare('SELECT id, seed, width, season, started, played, diffs FROM worlds WHERE id = ?').get(id) as
+      | { id: string; seed: number; width: number; season: number; started: number; played: number; diffs: Uint8Array | null }
       | undefined;
     if (!row) return null;
-    return { id: row.id, seed: row.seed, width: row.width, season: row.season, started: row.started, diffs: unpackDiffs(row.diffs) };
+    return { id: row.id, seed: row.seed, width: row.width, season: row.season, started: row.started, played: row.played, diffs: unpackDiffs(row.diffs) };
   }
 
   createWorld(id: string, seed: number, width: number, season = 1): WorldRow {
     const started = Date.now();
     this.db.prepare('INSERT INTO worlds (id, seed, width, season, started, diffs) VALUES (?, ?, ?, ?, ?, NULL)').run(id, seed, width, season, started);
-    return { id, seed, width, season, started, diffs: [] };
+    return { id, seed, width, season, started, played: 0, diffs: [] };
+  }
+
+  savePlayed(id: string, played: number): void {
+    this.db.prepare('UPDATE worlds SET played = ? WHERE id = ?').run(Math.round(played), id);
   }
 
   saveWorld(id: string, pairs: Iterable<[number, number]>): void {

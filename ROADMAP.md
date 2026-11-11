@@ -114,6 +114,31 @@ The early game was tough and deaths cost too much. Most deaths were a dry tank o
 - [x] A rig carries at most 5 of each item (was 9). A rig that already holds more keeps them but can't buy more until it's under 5
 - [x] The Recall Beacon costs $2,500 (was $800), so getting home with your ore for free is no longer the cheap option
 
+## v0.3.4: A sharper picture, day and night (live since 2026-11-11) ✅
+
+The rig was hard to pick out from the ground. There are now two looks, switched with **Graphics: high / low** in the menu (saved per browser, high by default). Low is the v0.3.3 look, pixel for pixel, for phones and older computers.
+
+High adds, on the same 16-pixel grid:
+
+- [x] The rig: a dark outline, brighter three-tone paint, a lit headlamp and an amber roof beacon that blinks, a soft light behind it, a shadow on the ground, and exhaust puffs from the stack while it works. Other miners' rigs get the same sprite
+- [x] Darker tunnel backs (24%), a dark edge around every ore and gem, and a lit lip on tunnel floors
+- [x] Coloured light on top of the dark: a warm lamp pool and a headlamp beam, orange around magma, vents and the burner, blue around meltwater, red around flares. It never lights more than Low does, so neither setting sees further
+- [x] Ore glints now and then, and hard rock throws sparks off the bit
+- [x] Sky: a moon with a halo, bright stars that twinkle, and warm light from the station windows
+- [x] Darker screen corners (WebGL only)
+- [x] `npm run gfxcheck` switches the setting mid-game and checks the art, the rig's position and that the setting sticks. `GFX=low npm run shots` takes the screenshots in Low
+- [ ] Not done: the buildings, the sky crane and the ground textures are the same art in both settings
+
+Day and night, in both settings:
+
+- [x] A day is an hour: 40 minutes of daylight and 20 of night, with 3 minutes each of dawn and dusk across the changeovers (`DAY_SECONDS`, `NIGHT_SECONDS` and `TWILIGHT_SECONDS` in `src/sim/daytime.ts`). The first version had 5-minute days; the user asked for 40 and 20
+- [x] The sky fades between a pale polar day, a warm dawn and dusk, and the old night sky. Stars and the aurora only show at night, the mountains lighten by day, and night dims the surface. In High the sun and the moon cross the sky and set behind the mountains
+- [x] A day counter in the HUD under the temperature ("Day 3 · Night"), and a "Sunrise. Day 4" note as each day starts
+- [x] Days only count while somebody is playing. Online, the server keeps a day clock that runs while at least one miner is connected and stops when the world is empty (`played` in the `worlds` table, added on start-up; `started` in the welcome message is "now minus the day clock"). Everyone online sees the same day and the same sky. The live world starts at day 1 when this ships. Offline, day 1 starts with a new game and days only pass while the game is open (old saves start at day 1)
+- [x] No protocol bump: an older page just doesn't get `started`
+- [x] It's looks only: temperature, fuel and the dark underground are the same by day and by night
+- [ ] Not decided: whether night should do anything (colder surface, pricier fuel, better aurora-lit finds)
+
 ## v0.4: Friendly rivalry
 
 - [ ] Live ore market: each sale pushes that ore's price down server-wide, and it recovers over time. The Assay Office shows the trend

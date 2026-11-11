@@ -67,6 +67,8 @@ export class World {
   onSet?: (x: number, y: number, was: number, now: number) => void;
   /** Wall-clock seconds, the same on every screen. Steam vents and blizzards run off it. */
   time = 0;
+  /** The wall-clock second when day 1 began here (see daytime.ts). */
+  dayStart = 0;
   /** True while another miner is online who could bring fuel. Then an empty tank stalls the rig; otherwise it's the end of the rig. */
   rescue = false;
   /** layerTop[x * LAYERS.length + i] = depth where layer i starts in column x. */
