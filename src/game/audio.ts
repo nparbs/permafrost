@@ -218,6 +218,27 @@ export class Sfx {
     this.tone(1200, 0.1, 'square', 0.04);
   }
 
+  /** An engine coughing on fumes. */
+  sputter(): void {
+    [0, 0.17, 0.38, 0.68].forEach((d, i) => {
+      this.tone(105 - i * 13, 0.1, 'sawtooth', 0.13 - i * 0.02, d, -35);
+    });
+    this.tone(60, 0.5, 'sawtooth', 0.06, 0.9, -30);
+  }
+
+  /** Ice closing over the rig. */
+  freeze(): void {
+    this.burst(0.5, 6000, 0.12, 'highpass');
+    [2300, 1900, 2700, 1500].forEach((f, i) => this.tone(f, 0.05, 'triangle', 0.05, i * 0.06));
+    this.tone(180, 0.6, 'sine', 0.1, 0.1, -120);
+  }
+
+  /** The sky crane's rotors, coming in and leaving. */
+  rotor(): void {
+    for (let i = 0; i < 26; i++) this.tone(72 + (i % 2) * 6, 0.07, 'sawtooth', 0.035 + 0.03 * Math.sin((i / 25) * Math.PI), i * 0.105);
+    this.burst(2.6, 900, 0.07);
+  }
+
   crunch(): void {
     this.burst(0.08, 2600, 0.1, 'bandpass');
     this.tone(1500, 0.04, 'square', 0.03);

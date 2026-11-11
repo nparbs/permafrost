@@ -4,7 +4,7 @@ import { Client, Game } from '../server/game';
 import { NetSession, type Transport, type Welcome } from '../src/net/netSession';
 import { PROTOCOL_VERSION, RIG_SOS, RIG_STALLED, cleanChat, cleanName, decodeDiffs, encodeDiffs, type ClientMsg, type ServerMsg } from '../src/net/protocol';
 import { cargoCount, newPlayer, placeRig } from '../src/sim/player';
-import { AID_REACH, aid, towFee } from '../src/sim/station';
+import { AID_REACH, aid, rescueFee } from '../src/sim/station';
 import { World } from '../src/sim/world';
 import { STEP } from '../src/sim/rig';
 import { MINERAL_BASE, T } from '../src/sim/tiles';
@@ -357,7 +357,7 @@ describe('two miners', () => {
     expect(a.received.some((m) => m.t === 'map')).toBe(false);
   });
 
-  it('a stalled miner sends an SOS, and a miner with a Fuel Cell parked beside them refuels them for the tow fee', () => {
+  it('the SOS of a stalled miner goes out by itself, and a miner with a Fuel Cell parked beside them refuels them for the rescue fee', () => {
     const lab = new Lab();
     const a = lab.join({ lag: 2, hello: { name: 'Ada' } });
     const b = lab.join({ lag: 2, hello: { name: 'Bo' } });
@@ -373,11 +373,10 @@ describe('two miners', () => {
     placeRig(pa.rig, x + 0.5, y + 1);
     placeRig(pb.rig, x + 2.5, y + 1);
     pa.rig.fuel = 0;
+    pa.items.fuelcell = 0;
+    sa.player.items.fuelcell = 0;
     pa.cash = 1000;
     pb.items.fuelcell = 1;
-    lab.run([sa, sb], 20);
-    expect(pa.rig.stalled).toBe(true);
-    expect(sa.player.rig.stalled).toBe(true);
 
     const heardA: string[] = [];
     const heardB: string[] = [];
@@ -389,8 +388,11 @@ describe('two miners', () => {
       if (e.t === 'peer-sos') heardB.push(`sos:${e.name}:${e.mine}`);
       if (e.t === 'rescue') heardB.push(`rescue:${e.role}:${e.fee}`);
     });
+    // The SOS goes out by itself when the rig stalls, once. Asking again changes nothing.
+    lab.run([sa, sb], 20);
+    expect(pa.rig.stalled).toBe(true);
+    expect(sa.player.rig.stalled).toBe(true);
     sa.sos();
-    sa.sos(); // only once per stall
     expect(sa.sosSent).toBe(true);
     lab.run([sa, sb], 15);
     expect(heardA).toEqual(['sos:Ada:true']);
@@ -399,7 +401,7 @@ describe('two miners', () => {
     expect(seen.flags & RIG_STALLED).toBeTruthy();
     expect(seen.flags & RIG_SOS).toBeTruthy();
 
-    const fee = towFee(pa);
+    const fee = rescueFee(pa);
     sb.aid(sa.me.id);
     lab.run([sa, sb], 15);
     expect(pa.rig.stalled).toBe(false);
@@ -416,6 +418,126 @@ describe('two miners', () => {
     // Rig flags clear once the miner has fuel again.
     lab.run([sa, sb], 10);
     expect([...sb.peers()].find((p) => p.name === 'Ada')!.flags & (RIG_STALLED | RIG_SOS)).toBe(0);
+  });
+
+  it('alone online, an empty tank ends the rig, and a respawn puts a fuelled one on the pad with the ore gone', () => {
+    const lab = new Lab();
+    const a = lab.join({ lag: 2 });
+    const s = a.session!;
+    const w = lab.game.world;
+    const p = a.client.player!;
+    const x = 20;
+    const y = SKY + 40;
+    for (let yy = y - 1; yy <= y; yy++) for (let xx = x - 1; xx <= x + 1; xx++) w.set(xx, yy, T.AIR);
+    w.set(x, y + 1, T.ICE);
+    placeRig(p.rig, x + 0.5, y + 1);
+    p.rig.fuel = 0.02;
+    p.items.fuelcell = 0;
+    s.player.items.fuelcell = 0;
+    p.cargo = { tin: 2 };
+    p.cash = 300;
+    lab.run([s], 40);
+    expect(p.rig.wrecked).toBe(true);
+    expect(s.player.rig.wrecked).toBe(true);
+    expect(s.player.rig.wreckedBy).toBe('fuel');
+    expect(s.act({ a: 'respawn' }).ok).toBe(true);
+    lab.run([s], 20);
+    const sp = w.spawn();
+    for (const pl of [p, s.player]) {
+      expect(pl.rig.wrecked).toBe(false);
+      expect(pl.rig.x).toBeCloseTo(sp.x);
+      expect(pl.rig.fuel).toBe(10);
+      expect(cargoCount(pl)).toBe(0);
+      expect(pl.cash).toBe(300);
+    }
+    expect(p.stats.deaths).toBe(1);
+  });
+
+  it('online, a carried Fuel Cell cuts in on both sides without the page losing count', () => {
+    const lab = new Lab();
+    const a = lab.join({ lag: 3, jitter: 2 });
+    const s = a.session!;
+    const w = lab.game.world;
+    const p = a.client.player!;
+    const x = 20;
+    const y = SKY + 40;
+    for (let yy = y - 1; yy <= y; yy++) for (let xx = x - 1; xx <= x + 1; xx++) w.set(xx, yy, T.AIR);
+    w.set(x, y + 1, T.ICE);
+    placeRig(p.rig, x + 0.5, y + 1);
+    p.rig.fuel = 0.05;
+    p.items.fuelcell = 1;
+    s.player.items.fuelcell = 1;
+    let reserves = 0;
+    s.on((e) => {
+      if (e.t === 'reserve') reserves++;
+    });
+    lab.run([s], 120);
+    expect(reserves).toBe(1);
+    for (const pl of [p, s.player]) {
+      expect(pl.rig.wrecked).toBe(false);
+      expect(pl.items.fuelcell).toBe(0);
+      expect(pl.rig.fuel).toBeGreaterThan(4);
+    }
+  });
+
+  it('a miner who stalls in the air with someone else online comes down on the parachute and can give up', () => {
+    const lab = new Lab();
+    const a = lab.join({ lag: 2, hello: { name: 'Ada' } });
+    const b = lab.join({ lag: 2, hello: { name: 'Bo' } });
+    const sa = a.session!;
+    const w = lab.game.world;
+    const pa = a.client.player!;
+    const x = 20;
+    const y = SKY + 40;
+    for (let yy = y - 12; yy <= y; yy++) w.set(x, yy, T.AIR);
+    w.set(x, y + 1, T.ICE);
+    placeRig(pa.rig, x + 0.5, y + 1);
+    pa.rig.y -= 10;
+    pa.rig.grounded = false;
+    pa.rig.fuel = 0;
+    pa.items.fuelcell = 0;
+    sa.player.items.fuelcell = 0;
+    pa.cargo = { tin: 2 };
+    const hull = pa.rig.hull;
+    lab.run([sa, b.session!], 60 * 5);
+    expect(pa.rig.stalled).toBe(true);
+    expect(pa.rig.grounded).toBe(true);
+    expect(pa.rig.hull).toBe(hull);
+    expect(sa.player.rig.stalled).toBe(true);
+    expect(sa.act({ a: 'respawn' }).ok).toBe(true);
+    lab.run([sa, b.session!], 20);
+    expect(pa.rig.stalled).toBe(false);
+    expect(pa.rig.x).toBeCloseTo(w.spawn().x);
+    expect(cargoCount(pa)).toBe(0);
+  });
+
+  it('miners nearby are told when a rig is lost, and how', () => {
+    const lab = new Lab();
+    const a = lab.join({ lag: 2, hello: { name: 'Ada' } });
+    const b = lab.join({ lag: 2, hello: { name: 'Bo' } });
+    const w = lab.game.world;
+    const pa = a.client.player!;
+    const x = 20;
+    const y = SKY + 40;
+    for (let yy = y - 22; yy <= y; yy++) for (let xx = x - 1; xx <= x + 3; xx++) w.set(xx, yy, T.AIR);
+    for (let xx = x - 1; xx <= x + 3; xx++) w.set(xx, y + 1, T.ICE);
+    placeRig(b.client.player!.rig, x + 2.5, y + 1);
+    placeRig(pa.rig, x + 0.5, y + 1);
+    lab.run([a.session!, b.session!], 20);
+    // Ada drops 20 tiles with a hull that can't take it.
+    pa.rig.y -= 20;
+    pa.rig.grounded = false;
+    pa.rig.hull = 1;
+    const heard: string[] = [];
+    b.session!.on((e) => {
+      if (e.t === 'peer-wrecked') heard.push(`${e.name}:${e.cause}:${Math.round(e.x)}`);
+    });
+    a.session!.on((e) => {
+      if (e.t === 'peer-wrecked') heard.push('Ada heard her own');
+    });
+    lab.run([a.session!, b.session!], 60 * 3);
+    expect(pa.rig.wrecked).toBe(true);
+    expect(heard).toEqual([`Ada:fall:${Math.round(x + 0.5)}`]);
   });
 
   it("an SOS from a rig that isn't stalled goes nowhere", () => {
@@ -442,9 +564,9 @@ describe('refuelling another miner', () => {
     return { helper, target };
   }
 
-  it('works next to a stalled miner and moves the tow fee across', () => {
+  it('works next to a stalled miner and moves the rescue fee across', () => {
     const { helper, target } = pair();
-    const fee = towFee(target);
+    const fee = rescueFee(target);
     const r = aid(helper, target);
     expect(r).toEqual({ ok: true, fee, litres: 5 });
     expect(helper.items.fuelcell).toBe(1);

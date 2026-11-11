@@ -83,6 +83,8 @@ await b.screenshot({ path: 'shots/mp-02-bo-watching.png' });
 await a.keyboard.press('KeyT');
 await a.keyboard.type('anyone seen glacite yet?');
 await a.keyboard.press('Enter');
+await a.waitForFunction(() => window.pf.cutscene, null, { timeout: 5000 }).catch(() => {});
+await a.evaluate(() => window.pf.skip());
 await b.waitForTimeout(700);
 sb = await state(b);
 check(sb.chat.some((l) => l.includes('glacite')), `Bo got the chat: ${JSON.stringify(sb.chat)}`);

@@ -45,7 +45,7 @@ The finale: plant charges on the Hearth's heat vents while it pulses freezing wa
 - [x] Hazards: gas pockets that blow, magma, and boulders you can only clear with charges
 - [x] Rime Station: Fuel Depot, Assay Office (with a price list of what you've found), Machine Shop (7 upgrade lines, 4 to 7 tiers each), Repair Bay and Supply Store
 - [x] Items: Fuel Cell, Repair Kit, Thermal Charge, Shaped Charge and Recall Beacon
-- [x] Running out of fuel or wrecking the rig: a tow home for a fee, and the cargo is lost
+- [x] Running out of fuel or wrecking the rig: a tow home for a fee, and the cargo is lost (changed in v0.3.2: see below)
 - [x] A headlamp: the deeper you go, the darker it gets outside the rig's light
 - [x] Layer banners, toasts, a frost or heat glow at the screen edges, and a low-fuel alarm
 - [x] Sound effects synthesized with Web Audio
@@ -90,13 +90,32 @@ The finale: plant charges on the Hearth's heat vents while it pulses freezing wa
 - [x] Fixes: an item the server refuses now says "Can't use a Flare right now" instead of "The station says no"
 - [x] `PROTOCOL_VERSION` is 3 (generation changed), so open pages are told to refresh when this ships
 
+## v0.3.2: Softer landings (built 2026-11-10, not shipped yet)
+
+The early game was tough and deaths cost too much. Most deaths were a dry tank on the flight home, then a fall. The user's choices: a death costs the ore on board and nothing else, a carried Fuel Cell fires by itself, and SOS only exists while another miner is online.
+
+- [x] An empty tank underground ends the rig (cause `fuel`), offline or alone online. No more stall, tow panel and fall. A dry tank on the surface still lets you crawl to the depot
+- [x] A carried Fuel Cell is a reserve tank: it cuts in by itself at 0 L, with a warning
+- [x] Online with another miner on: an empty tank stalls the rig as before. In the air it comes down on a parachute, unhurt. The SOS goes out by itself (the server sends it), other miners get a red arrow at the edge of the screen pointing to the rig, and the Out of fuel panel has Keep waiting, Recall Beacon and Give up and respawn. If the last other miner leaves, the stalled rig is lost
+- [x] Death costs the ore on board only: no fee, and cash, upgrades and items are kept. The new rig has a full tank and full hull. `respawn` replaced `tow`
+- [x] Death scenes by cause: out of fuel (the engine coughs, the lamp flickers out, the rig frosts over), hard landing and rockfall (crushed), gas (blown apart), magma, heat and steam (melts down). A wreck in mid-air drops first. A card names the cause, the depth, what was lost, and a line from the station crew. Black bars, HUD hidden, Space or a tap skips
+- [x] Arrival scene at the start of a new game and after every death: the station's sky crane lowers the rig onto the pad and flies off
+- [x] Station keys: E enters, Space (or Enter) does the main thing and the panel closes: fill up, sell everything, repair. In the Machine Shop and Supply Store the arrows pick a card and Space buys it; the shop closes once nothing else is affordable. A "+$120", "+7.0 L" or "+Carbide Auger" floats up from the rig
+- [x] Cheaper early upgrades: tier 1 is $100 to $200 (was $300 to $500), tier 2 about half, tier 3 about a third off, and later tiers 5 to 20% off, so the first trips buy something
+- [x] A new rig starts with one Fuel Cell, so the first dry tank is a warning and not a death (rigs that already exist don't get one)
+- [x] Other miners see a rig's end: a burst by cause where it happened, the wreck left frozen, crushed, charred or melted until its miner respawns, and a line in the feed ("Ada lost a rig at 300 m: gas pocket"). The server shares the `wrecked` event as an `fx`
+- [x] The fuel gauge has a white tick for the fuel the flight home takes from here (`fuelToSurface`), blinks below it, and there's one "head up now" warning per trip
+- [x] `PROTOCOL_VERSION` is 4 (snapshots carry items, `respawn` action). `PlayerStats.deaths` counts rigs lost
+- [ ] Not built: the sky crane isn't shown for other miners' arrivals; they just appear on the pad
+- [ ] Not decided: what refuelling another miner unlocks (the user wants it to unlock something). Rescues are already counted
+
 ## v0.4: Friendly rivalry
 
 - [ ] Live ore market: each sale pushes that ore's price down server-wide, and it recovers over time. The Assay Office shows the trend
 - [ ] Daily bounties: the Combine pays extra for one ore today
 - [ ] Server-wide announcements for big finds such as relics and Heartshards, plus a "first to find it" board for the season
 - [x] SOS: a stalled miner sends a beacon, and anyone who brings fuel earns the tow fee (done early, in v0.3.1)
-- [ ] Towing a stalled or wrecked miner with a cable, for the same fee (see the tow cable idea below)
+- [ ] Towing a stalled miner with a cable, for the rescue fee (see the tow cable idea below)
 - [ ] Trading ore between players at the station
 - [ ] Leaderboards for the season: deepest, most earned, relics found, rescues and fastest Hearth
 - [ ] Seasons (4 weeks by default): the map regenerates, and rigs, cash and upgrades reset. Cosmetics, titles, prestige stars and history stay. There's a season summary screen

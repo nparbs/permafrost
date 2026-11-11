@@ -2,7 +2,7 @@
 
 An original drill-and-dig game on a frozen planet. You drill down through snow, glacier ice, permafrost and bedrock into the hot Hollow below. You haul ore back up to Rime Station, sell it, and upgrade your rig. Cold is the danger near the surface, and heat is the danger deep down.
 
-It runs in the browser and on phones, in a shared online world at https://permafrost.parbs.online or offline in single player. The ice is alive: loose boulders and slabs fall, tunnels near the surface refreeze, magma pours into fresh tunnels, steam vents blow, and blizzards roll over the station. Meltwater pockets in the glacier are free fuel. Online, a minimap shows where the other miners are, and a miner who runs dry can send an SOS for someone to bring them fuel. See [ROADMAP.md](ROADMAP.md) for what's next.
+It runs in the browser and on phones, in a shared online world at https://permafrost.parbs.online or offline in single player. The ice is alive: loose boulders and slabs fall, tunnels near the surface refreeze, magma pours into fresh tunnels, steam vents blow, and blizzards roll over the station. Meltwater pockets in the glacier are free fuel. Online, a minimap shows where the other miners are, and a miner who runs dry while others are on gets a parachute and an SOS, so someone can bring them fuel. Alone, an empty tank is the end of the rig: you lose the ore on board and start again from the station. See [ROADMAP.md](ROADMAP.md) for what's next.
 
 ## Run it
 
@@ -15,6 +15,8 @@ npm run server     # the online server on :8791 (npm run dev forwards /ws to it)
 npm run shots      # headless screenshots to shots/ (needs the dev server; URL=... to change)
                    # scenarios: desktop, phone, dig (rounded tunnels), living (v0.3 hazards and light)
 npm run uicheck    # phone panels scroll by finger, stall options, minimap and map with two miners
+npm run cinecheck  # death and arrival scenes, respawns, Space at the station (offline)
+npm run soscheck   # two miners: stall, SOS arrow, give up; then an empty tank alone (needs the server)
 ```
 
 ## Controls
@@ -25,6 +27,8 @@ npm run uicheck    # phone panels scroll by finger, stall options, minimap and m
 | Drill down | ↓ or S | ▼ |
 | Thrust (and break up through rime) | ↑, W or Space | ▲ |
 | Enter a building, or refuel a stalled miner next to you | E or Enter | tap the prompt |
+| In a building: fill up, sell, repair or buy the highlighted card | Space or Enter (arrows pick a card) | tap the button |
+| Skip a cutscene | Space, Enter, E or Esc | tap |
 | Items | 1 to 6 | item buttons |
 | Map | N | tap the minimap (online), or Menu → Map |
 | Chat (online) | T | Chat button |

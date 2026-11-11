@@ -9,9 +9,9 @@ import { SKY, type Building, type World } from './world';
 
 export const FUEL_PRICE = 2; // per litre
 export const REPAIR_PRICE = 3; // per hull point
-/** Share of your cash a tow costs, plus a flat part. */
-export const TOW_SHARE = 0.15;
-export const TOW_FLAT = 50;
+/** What a stalled miner pays whoever refuels them: a share of their cash plus a flat part. */
+export const RESCUE_SHARE = 0.15;
+export const RESCUE_FLAT = 50;
 
 /** The building the rig is parked in front of, if any. */
 export function buildingAt(world: World, p: Player): Building | null {
@@ -107,8 +107,8 @@ export function buyItem(p: Player, key: ItemKey): BuyResult {
   return 'ok';
 }
 
-export function towFee(p: Player): number {
-  return Math.min(p.cash, Math.round(TOW_FLAT + p.cash * TOW_SHARE));
+export function rescueFee(p: Player): number {
+  return Math.min(p.cash, Math.round(RESCUE_FLAT + p.cash * RESCUE_SHARE));
 }
 
 /** How close (in tiles, each way) a helper must park to hand over fuel. */
@@ -118,7 +118,7 @@ export type AidResult = { ok: true; fee: number; litres: number } | { ok: false;
 
 /**
  * One miner hands a Fuel Cell to a stalled one parked next to them. The stalled miner keeps
- * their cargo and spot, and pays the helper what a tow would have cost them.
+ * their cargo and spot, and pays the helper the rescue fee.
  */
 export function aid(helper: Player, target: Player): AidResult {
   const h = helper.rig;
@@ -131,7 +131,7 @@ export function aid(helper: Player, target: Player): AidResult {
   helper.items.fuelcell--;
   t.fuel += litres;
   t.stalled = false;
-  const fee = towFee(target);
+  const fee = rescueFee(target);
   target.cash -= fee;
   helper.cash += fee;
   helper.stats.earned += fee;
@@ -139,20 +139,26 @@ export function aid(helper: Player, target: Player): AidResult {
   return { ok: true, fee, litres };
 }
 
-/** Haul a stranded or wrecked rig back to the station. Cargo is lost. */
-export function tow(p: Player, world: World): number {
-  const fee = towFee(p);
+/**
+ * A new rig at the station after a wreck, or after giving up on a stall. The ore on board is
+ * lost; cash, upgrades and items are kept, and the rig arrives fuelled and repaired.
+ * Returns how much ore was lost.
+ */
+export function respawn(p: Player, world: World): number {
+  const lost = cargoCount(p);
   const s = statsOf(p);
-  p.cash -= fee;
   p.cargo = {};
+  p.stats.deaths++;
   const r = p.rig;
   r.wrecked = false;
+  r.wreckedBy = null;
   r.stalled = false;
-  r.fuel = Math.max(r.fuel, s.tank * 0.3);
-  r.hull = Math.max(r.hull, s.maxHull * 0.3);
+  r.cold = r.hot = r.scald = false;
+  r.fuel = s.tank;
+  r.hull = s.maxHull;
   const sp = world.spawn();
   placeRig(r, sp.x, sp.y);
-  return fee;
+  return lost;
 }
 
 export const cargoFree = (p: Player) => statsOf(p).cargo - cargoCount(p);

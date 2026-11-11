@@ -35,6 +35,8 @@ async function open(viewport, touch, tag) {
 for (const [w, h, name] of [[640, 360, 'landscape'], [360, 640, 'portrait']]) {
   const page = await open({ width: w, height: h }, true, name);
   await page.evaluate(() => [...document.querySelectorAll('.title-btns .btn')].find((b) => /offline/i.test(b.textContent)).click());
+  await page.waitForFunction(() => window.pf.cutscene, null, { timeout: 5000 }).catch(() => {});
+  await page.evaluate(() => window.pf.skip());
   await wait(page, 500);
   await page.evaluate(() => {
     const s = window.pf.session;
@@ -110,6 +112,8 @@ async function online(name, paint, viewport, touch) {
   await page.fill('.name-in', name);
   await page.click(`.paints .paint:nth-child(${paint + 1})`);
   await page.evaluate(() => document.querySelector('.title .btn.primary').click());
+  await page.waitForFunction(() => window.pf.cutscene, null, { timeout: 5000 }).catch(() => {});
+  await page.evaluate(() => window.pf.skip());
   await page.waitForFunction(() => window.pf.session.online, null, { timeout: 8000 });
   await wait(page, 500);
   return page;

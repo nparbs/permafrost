@@ -3,16 +3,16 @@
 import type { Sfx } from '../game/audio';
 import type { GameSession } from '../game/session';
 import { PAINTS } from '../game/textures';
-import { CHAT_MAX, NAME_MAX, PAINT_COUNT, RIG_STALLED, RIG_WRECKED, cleanName } from '../net/protocol';
+import { CHAT_MAX, NAME_MAX, PAINT_COUNT, RIG_SOS, RIG_STALLED, RIG_WRECKED, cleanName } from '../net/protocol';
 import type { Action, ActResult } from '../sim/actions';
 import { ITEMS, ITEM_ORDER, ITEM_STACK, type ItemKey } from '../sim/items';
-import { cargoCount, cargoValue, statsOf } from '../sim/player';
-import { rigDepth, type Input } from '../sim/rig';
-import { AID_REACH, FUEL_PRICE, buildingAt, refuelCost, repairCost, saleLines, towFee } from '../sim/station';
+import { cargoCount, cargoValue, statsOf, type HurtCause } from '../sim/player';
+import { fuelToSurface, rigDepth, type Input } from '../sim/rig';
+import { AID_REACH, FUEL_PRICE, buildingAt, refuelCost, repairCost, rescueFee, saleLines } from '../sim/station';
 import { tempAtDepth } from '../sim/temperature';
 import { ambientTemp, blizzardAt } from '../sim/weather';
 import { LAYERS, MINERALS } from '../sim/tiles';
-import { UPGRADES, UPGRADE_ORDER } from '../sim/upgrades';
+import { UPGRADES, UPGRADE_ORDER, type UpgradeKey } from '../sim/upgrades';
 import { METERS_PER_TILE, type Building } from '../sim/world';
 import { Minimap, WorldMap } from './minimap';
 
@@ -34,6 +34,9 @@ export const esc = (s: string) => s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt
 function button(label: string, onClick: () => void, cls = '', disabled = false): HTMLButtonElement {
   const b = el('button', `btn ${cls}`, label);
   b.disabled = disabled;
+  // Keep keyboard focus off buttons, so Space confirms the panel instead of re-pressing the last button clicked.
+  b.tabIndex = -1;
+  b.addEventListener('mousedown', (e) => e.preventDefault());
   b.addEventListener('click', (e) => {
     e.stopPropagation();
     onClick();
@@ -60,6 +63,51 @@ const WHY: Record<string, string> = {
 };
 export const whyText = (r: ActResult) => WHY[r.why ?? 'bad'] ?? WHY.bad;
 
+/** The key hint on the button Space presses. Hidden on touch screens along with every other <kbd>. */
+const SPACE = '<kbd>Space</kbd> ';
+
+/** Colours of the "+$240", "+12 L" texts that float over the rig. */
+const FLOAT = { cash: '#ffd76a', fuel: '#ffc040', hull: '#7aff9a', gear: '#9fe8ff' };
+
+/** The death card: what happened, and what the station has to say about it. */
+const DEATHS: Record<HurtCause, { title: string; sub: string; radio: string[] }> = {
+  fuel: {
+    title: 'Out of fuel',
+    sub: 'Frozen solid',
+    radio: ['Depot: "The gauge on the left. That was the one that mattered."', 'Depot: "Fuel is two dollars a litre. Rigs run a little more."', 'Mechanic: "I\'ll fetch the ice pick."'],
+  },
+  fall: {
+    title: 'Rig wrecked',
+    sub: 'Hull split on landing',
+    radio: ['Mechanic: "The thruster works on the way down too."', 'Mechanic: "That\'ll buff out. Into a different rig."', 'Assayer: "Gravity remains free of charge."'],
+  },
+  rock: {
+    title: 'Crushed',
+    sub: 'Rockfall',
+    radio: ['Mechanic: "If it shakes, don\'t park under it."', 'Assayer: "For the record, the rock was worthless."'],
+  },
+  gas: {
+    title: 'Gas pocket',
+    sub: 'Blown apart',
+    radio: ['Mechanic: "Found the gas, then."', 'Depot: "Not one of ours. We only sell the slow kind."'],
+  },
+  magma: {
+    title: 'Melted down',
+    sub: 'Lost to magma',
+    radio: ['Mechanic: "The glowing rock is the bad rock."', 'Assayer: "We don\'t buy rigs by the puddle."'],
+  },
+  heat: {
+    title: 'Cooked',
+    sub: 'Overheated',
+    radio: ['Mechanic: "Radiators. We sell them. Just saying."', 'Depot: "Warm down there? Must be nice."'],
+  },
+  steam: {
+    title: 'Scalded',
+    sub: 'Caught in a steam vent',
+    radio: ['Mechanic: "The vents go off every six seconds. Count next time."'],
+  },
+};
+
 export interface TitleInfo {
   hasSave: boolean;
   name: string;
@@ -77,6 +125,10 @@ interface Hooks {
   leave: () => void;
   setPaint: (paint: number) => void;
   setName: (name: string) => void;
+  /** Float a short text over the rig, like "+$240". */
+  float: (text: string, color: string) => void;
+  /** The stalled player gave up: lose the rig and respawn. */
+  giveUp: () => void;
 }
 
 interface Gauge {
@@ -116,6 +168,18 @@ export class UI {
   private panelKind = '';
   private textCache = new WeakMap<HTMLElement, string>();
   private highestLayer = 0;
+  /** What Space or Enter does in the open panel, if anything. */
+  private confirm: (() => void) | null = null;
+  /** What the arrow keys do in the open panel, if anything. */
+  private nav: ((dx: number, dy: number) => void) | null = null;
+  /** The highlighted card in the Machine Shop or Supply Store. */
+  private sel = 0;
+  /** Marks the fuel for the flight home on the fuel gauge. */
+  private homeMark: HTMLElement;
+  private sosArrow: HTMLElement;
+  private death: HTMLElement;
+  /** A cutscene is playing: no panels, prompts or items. */
+  busy = false;
   titleOpen = true;
   /** The account code, shown in the menu while online. */
   code: string | null = null;
@@ -139,6 +203,8 @@ export class UI {
       return { root, bar, text };
     };
     this.gauges = { fuel: gauge('fuel', 'Fuel'), hull: gauge('hull', 'Hull'), cargo: gauge('cargo', 'Cargo') };
+    this.homeMark = this.gauges.fuel.bar.parentElement!.appendChild(el('u'));
+    this.homeMark.title = 'Fuel needed to fly home from here';
     this.chatLog = left.appendChild(el('div', 'chat-log'));
     const read = top.appendChild(el('div', 'readout'));
     this.cash = read.appendChild(el('div', 'cash'));
@@ -152,6 +218,9 @@ export class UI {
     this.minimap = new Minimap(() => this.openMap());
     read.appendChild(this.minimap.root);
 
+    r.appendChild(el('div', 'bars'));
+    this.sosArrow = r.appendChild(el('div', 'sos-arrow', '<i></i><span></span>'));
+    this.death = r.appendChild(el('div', 'death'));
     this.banner = r.appendChild(el('div', 'banner'));
     this.toasts = r.appendChild(el('div', 'toasts'));
     this.prompt = r.appendChild(button('', () => this.interact(), 'prompt'));
@@ -271,7 +340,7 @@ export class UI {
         'div',
         'help',
         `<p><kbd>←</kbd><kbd>→</kbd> drive and drill sideways · <kbd>↓</kbd> drill down · <kbd>↑</kbd> or <kbd>Space</kbd> thrust</p>
-         <p><kbd>E</kbd> enter a building · <kbd>1</kbd>–<kbd>6</kbd> items · <kbd>N</kbd> map · <kbd>T</kbd> chat · <kbd>M</kbd> mute · <kbd>Esc</kbd> menu</p>`,
+         <p><kbd>E</kbd> enter a building, <kbd>Space</kbd> to sell or buy there · <kbd>1</kbd>–<kbd>6</kbd> items · <kbd>N</kbd> map · <kbd>T</kbd> chat · <kbd>M</kbd> mute · <kbd>Esc</kbd> menu</p>`,
       ),
     );
     box.appendChild(
@@ -317,7 +386,11 @@ export class UI {
     const st = statsOf(p);
     const d = rigDepth(r);
     const fuelK = r.fuel / st.tank;
-    this.setGauge(this.gauges.fuel, fuelK, `${r.fuel.toFixed(1)} / ${st.tank} L`, fuelK < 0.2 && d > 0.5);
+    // The white tick is what the flight home takes from here. Below it, the gauge blinks.
+    const home = d > 3 ? fuelToSurface(p, this.s.world) : 0;
+    this.setGauge(this.gauges.fuel, fuelK, `${r.fuel.toFixed(1)} / ${st.tank} L`, d > 0.5 && (fuelK < 0.2 || r.fuel < home));
+    this.homeMark.style.display = home > 0 ? 'block' : 'none';
+    if (home > 0) this.homeMark.style.left = `${Math.min(1, home / st.tank) * 100}%`;
     this.setGauge(this.gauges.hull, r.hull / st.maxHull, `${Math.ceil(r.hull)} / ${st.maxHull}`, r.hull / st.maxHull < 0.25);
     const n = cargoCount(p);
     this.setGauge(this.gauges.cargo, n / st.cargo, `${n} / ${st.cargo}`, n >= st.cargo);
@@ -340,7 +413,7 @@ export class UI {
       b.classList.toggle('empty', c === 0);
     }
 
-    const pr = this.render ? null : this.promptNow();
+    const pr = this.render || this.busy ? null : this.promptNow();
     const key = pr ? (pr.kind === 'building' ? `b:${pr.b.key}` : pr.kind === 'aid' ? `a:${pr.id}:${pr.name}` : 'stall') : '';
     if (key !== this.promptKey) {
       this.promptKey = key;
@@ -350,6 +423,7 @@ export class UI {
       else if (pr?.kind === 'aid') this.prompt.innerHTML = `<kbd>E</kbd><b>Refuel</b><span>${esc(pr.name)}</span>`;
     }
     this.minimap.frame(this.s, this.s.online && !this.titleOpen && this.s.mapPeers().length > 0);
+    this.frameSos();
     if (this.worldMap && this.panelKind === 'map') this.worldMap.draw();
 
     const layer = layerForDepth(d);
@@ -358,6 +432,38 @@ export class UI {
       const L = LAYERS[layer];
       this.showBanner(L.name, `${meters(L.top)} · ${Math.round(tempAtDepth(L.top))}°C`);
     }
+  }
+
+  /** An arrow at the edge of the screen pointing at the nearest miner who sent an SOS. */
+  private frameSos(): void {
+    const a = this.sosArrow;
+    const me = this.s.player.rig;
+    let best: { name: string; dx: number; dy: number } | null = null;
+    let near = Infinity;
+    if (this.s.online && !this.busy && !this.titleOpen && !me.stalled) {
+      for (const o of this.s.mapPeers()) {
+        if (!(o.flags & RIG_SOS) || o.flags & RIG_WRECKED) continue;
+        const dist = Math.hypot(o.x - me.x, o.y - me.y);
+        if (dist < near) {
+          near = dist;
+          best = { name: o.name, dx: o.x - me.x, dy: o.y - me.y };
+        }
+      }
+    }
+    // Close enough to see them (and their SOS tag) on screen.
+    if (!best || near < 6) {
+      a.classList.remove('show');
+      return;
+    }
+    const ang = Math.atan2(best.dy, best.dx);
+    const w = this.root.clientWidth;
+    const h = this.root.clientHeight;
+    const x = w / 2 + Math.cos(ang) * Math.max(40, w / 2 - 70);
+    const y = h / 2 + Math.sin(ang) * Math.max(40, h / 2 - 84);
+    a.classList.add('show');
+    a.style.transform = `translate(${Math.round(x)}px, ${Math.round(y)}px) translate(-50%, -50%)`;
+    (a.firstElementChild as HTMLElement).style.transform = `rotate(${ang.toFixed(2)}rad)`;
+    this.setText(a.lastElementChild as HTMLElement, `SOS · ${best.name} · ${Math.round(near) * METERS_PER_TILE} m`);
   }
 
   showBanner(title: string, sub: string): void {
@@ -376,7 +482,7 @@ export class UI {
   }
 
   useItem(k: ItemKey): void {
-    if (this.render || this.titleOpen) return;
+    if (this.render || this.titleOpen || this.busy) return;
     if ((this.s.player.items[k] ?? 0) <= 0) {
       this.toast(`No ${ITEMS[k].name}s. The Supply Store sells them.`, 'warn');
       this.sfx.error();
@@ -469,7 +575,7 @@ export class UI {
   }
 
   interact(): void {
-    if (this.render || this.titleOpen) return;
+    if (this.render || this.titleOpen || this.busy) return;
     const pr = this.promptNow();
     if (pr?.kind === 'building') this.openBuilding(pr.b);
     else if (pr?.kind === 'stall') this.showStalled();
@@ -486,7 +592,7 @@ export class UI {
   }
 
   openMap(): void {
-    if (this.titleOpen) return;
+    if (this.titleOpen || this.busy) return;
     this.sfx.click();
     const map = new WorldMap(this.s);
     this.openPanel('Map', () => map.box, true, 'map');
@@ -526,6 +632,8 @@ export class UI {
     if (!this.render) return;
     // Keep the scroll position, so buying something at the bottom of the shop doesn't jump to the top.
     const top = this.panelBody.scrollTop;
+    this.confirm = null;
+    this.nav = null;
     this.panelBody.replaceChildren(this.render());
     this.panelBody.scrollTop = top;
   }
@@ -533,10 +641,12 @@ export class UI {
   closePanel(save = true): void {
     if (!this.render) return;
     this.render = null;
+    this.confirm = null;
+    this.nav = null;
     this.panelKind = '';
     this.worldMap = null;
     this.panel.classList.add('hidden');
-    if (this.s && !this.titleOpen) this.s.paused = false;
+    if (this.s && !this.titleOpen && !this.busy) this.s.paused = false;
     if (save) this.hooks.save();
   }
 
@@ -549,10 +659,18 @@ export class UI {
       }
       return true;
     }
-    if (this.chatOpen) return true;
+    if (this.busy || this.chatOpen) return true;
     if (this.render) {
+      const arrow = NAV_KEYS[e.code];
       if (e.code === 'Escape' || (e.code === 'KeyE' && this.closable) || (e.code === 'KeyN' && this.panelKind === 'map')) {
         if (this.closable) this.closePanel();
+        e.preventDefault();
+      } else if (e.code === 'Space' || e.code === 'Enter') {
+        // Space is also thrust, so a held key must not buy twice (or fire the engine once the panel shuts).
+        if (!e.repeat) this.confirm?.();
+        e.preventDefault();
+      } else if (arrow && this.nav) {
+        this.nav(arrow[0], arrow[1]);
         e.preventDefault();
       }
       return true;
@@ -582,7 +700,20 @@ export class UI {
       supply: () => this.supplyPanel(),
     };
     this.sfx.click();
-    this.openPanel(b.name, panels[b.key]);
+    // Start the highlight on the first thing you can afford.
+    this.sel = Math.max(0, b.key === 'shop' ? UPGRADE_ORDER.findIndex((k) => this.canUpgrade(k)) : ITEM_ORDER.findIndex((k) => this.canBuyItem(k)));
+    this.openPanel(b.name, panels[b.key], true, b.key);
+  }
+
+  private canUpgrade(key: UpgradeKey): boolean {
+    const p = this.s.player;
+    const next = UPGRADES[key].tiers[p.upgrades[key] + 1];
+    return !!next && p.cash >= next.cost;
+  }
+
+  private canBuyItem(k: ItemKey): boolean {
+    const p = this.s.player;
+    return p.cash >= ITEMS[k].cost && (p.items[k] ?? 0) < ITEM_STACK;
   }
 
   /** Run a station action, play the right sound and redraw the panel. */
@@ -597,6 +728,26 @@ export class UI {
       this.toast(whyText(r), 'warn');
     }
     this.rerender();
+  }
+
+  /** Done at this building: close the panel and float what you got over the rig. */
+  private finish(text: string, color: string): void {
+    this.closePanel();
+    this.hooks.float(text, color);
+  }
+
+  /** Arrow keys move the highlight through a grid of `count` cards. */
+  private gridNav(count: number): (dx: number, dy: number) => void {
+    return (dx, dy) => {
+      const cards = [...this.panelBody.querySelectorAll<HTMLElement>('.up, .it')];
+      const cols = Math.max(1, cards.filter((c) => c.offsetTop === cards[0]?.offsetTop).length);
+      const to = this.sel + dx + dy * cols;
+      if (to < 0 || to >= count) return;
+      this.sel = to;
+      this.sfx.click();
+      this.rerender();
+      this.panelBody.querySelector('.sel')?.scrollIntoView({ block: 'nearest' });
+    };
   }
 
   private meter(label: string, k: number, text: string, cls: string): HTMLElement {
@@ -619,12 +770,14 @@ export class UI {
     box.appendChild(this.meter('Tank', p.rig.fuel / st.tank, `${p.rig.fuel.toFixed(1)} / ${st.tank} L`, 'g-fuel'));
     const cost = refuelCost(p);
     const row = box.appendChild(el('div', 'row'));
-    const fill = () => this.run({ a: 'refuel' });
+    const litres = (r: ActResult) => `+${(r.amount ?? 0).toFixed(1)} L`;
+    const fill = () => this.run({ a: 'refuel' }, (r) => this.finish(litres(r), FLOAT.fuel));
     if (cost <= 0) row.appendChild(button('Tank is full', () => {}, '', true));
-    else if (p.cash >= cost) row.appendChild(button(`Fill up · ${money(cost)}`, fill, 'primary'));
-    else row.appendChild(button(p.cash > 0 ? `Buy ${money(p.cash)} worth` : 'No cash', fill, 'primary', p.cash <= 0));
+    else if (p.cash >= cost) row.appendChild(button(`${SPACE}Fill up · ${money(cost)}`, fill, 'primary'));
+    else row.appendChild(button(p.cash > 0 ? `${SPACE}Buy ${money(p.cash)} worth` : 'No cash', fill, 'primary', p.cash <= 0));
+    this.confirm = cost > 0 && p.cash > 0 ? fill : () => this.closePanel();
     const five = Math.min(5, st.tank - p.rig.fuel);
-    row.appendChild(button(`+${five.toFixed(0)} L · ${money(Math.ceil(five * FUEL_PRICE))}`, () => this.run({ a: 'refuel', litres: 5 }), '', five < 0.5 || p.cash < 1));
+    row.appendChild(button(`+${five.toFixed(0)} L · ${money(Math.ceil(five * FUEL_PRICE))}`, () => this.run({ a: 'refuel', litres: 5 }, (r) => this.hooks.float(litres(r), FLOAT.fuel)), '', five < 0.5 || p.cash < 1));
     box.appendChild(el('p', 'note', `Fuel is ${money(FUEL_PRICE)} a litre. Cold below your heater's range makes the engine burn more.`));
     box.appendChild(this.cashLine());
     return box;
@@ -634,6 +787,7 @@ export class UI {
     const p = this.s.player;
     const box = el('div', 'pnl');
     const lines = saleLines(p);
+    this.confirm = () => this.closePanel();
     if (!lines.length) {
       box.appendChild(el('p', 'empty-note', 'Your cargo bay is empty. Bring up ore and we will weigh it.'));
     } else {
@@ -642,7 +796,9 @@ export class UI {
         const m = MINERALS.find((mm) => mm.key === l.key)!;
         tbl.appendChild(el('tr', '', `<td><i class="sw" style="background:${m.color}"></i>${l.name}</td><td>${l.count} × ${money(l.each)}</td><td>${money(l.total)}</td>`));
       }
-      box.appendChild(button(`Sell everything · ${money(cargoValue(p))}`, () => this.run({ a: 'sell' }, (r) => this.toast(`Sold for <b>${money(r.total ?? 0)}</b>`, 'good')), 'primary wide'));
+      const sell = () => this.run({ a: 'sell' }, (r) => this.finish(`+${money(r.total ?? 0)}`, FLOAT.cash));
+      box.appendChild(button(`${SPACE}Sell everything · ${money(cargoValue(p))}`, sell, 'primary wide'));
+      this.confirm = sell;
     }
     const list = el('details', 'prices');
     list.appendChild(el('summary', '', 'Price list'));
@@ -660,24 +816,41 @@ export class UI {
     const p = this.s.player;
     const box = el('div', 'pnl');
     const grid = box.appendChild(el('div', 'ups'));
-    for (const key of UPGRADE_ORDER) {
+    this.sel = Math.max(0, Math.min(UPGRADE_ORDER.length - 1, this.sel));
+    UPGRADE_ORDER.forEach((key, i) => {
       const line = UPGRADES[key];
       const tier = p.upgrades[key];
       const cur = line.tiers[tier];
       const next = line.tiers[tier + 1];
-      const card = grid.appendChild(el('div', 'up'));
-      const pips = line.tiers.map((_, i) => `<i class="${i <= tier ? 'on' : ''}"></i>`).join('');
+      const picked = i === this.sel;
+      const card = grid.appendChild(el('div', `up${picked ? ' sel' : ''}`));
+      const pips = line.tiers.map((_, k) => `<i class="${k <= tier ? 'on' : ''}"></i>`).join('');
       card.appendChild(el('div', 'up-h', `<b>${line.name}</b><span class="pips">${pips}</span>`));
       card.appendChild(el('p', 'up-blurb', line.blurb));
       card.appendChild(el('div', 'up-cur', `${cur.name} · ${line.format(cur.value)}`));
       if (next) {
+        const buy = () => {
+          this.sel = i;
+          this.run({ a: 'upgrade', k: key }, () => {
+            this.hooks.float(`+${next.name}`, FLOAT.gear);
+            // Nothing else in reach: back to the ice. Otherwise move on to the next thing you can afford.
+            if (!UPGRADE_ORDER.some((k) => this.canUpgrade(k))) this.closePanel();
+            else {
+              this.toast(`Installed: ${next.name}`, 'good');
+              if (!this.canUpgrade(key)) this.sel = UPGRADE_ORDER.findIndex((k) => this.canUpgrade(k));
+            }
+          });
+        };
         card.appendChild(el('div', 'up-next', `Next: ${next.name} · <b>${line.format(next.value)}</b>`));
-        card.appendChild(button(money(next.cost), () => this.run({ a: 'upgrade', k: key }, () => this.toast(`Installed: ${next.name}`, 'good')), p.cash >= next.cost ? 'primary' : '', p.cash < next.cost));
+        card.appendChild(button(`${picked ? SPACE : ''}${money(next.cost)}`, buy, p.cash >= next.cost ? 'primary' : '', p.cash < next.cost));
+        if (picked) this.confirm = buy;
       } else {
         card.appendChild(el('div', 'up-next', 'Fully upgraded'));
       }
       card.title = line.blurb;
-    }
+    });
+    this.nav = this.gridNav(UPGRADE_ORDER.length);
+    box.appendChild(el('p', 'note keys', '<kbd>←</kbd><kbd>→</kbd><kbd>↑</kbd><kbd>↓</kbd> pick · <kbd>Space</kbd> buy · <kbd>E</kbd> leave'));
     box.appendChild(this.cashLine());
     return box;
   }
@@ -688,11 +861,12 @@ export class UI {
     const box = el('div', 'pnl');
     box.appendChild(this.meter('Hull', p.rig.hull / st.maxHull, `${Math.ceil(p.rig.hull)} / ${st.maxHull}`, 'g-hull'));
     const cost = repairCost(p);
-    const fix = () => this.run({ a: 'repair' });
+    const fix = () => this.run({ a: 'repair' }, (r) => this.finish(`+${Math.max(1, Math.round(r.amount ?? 0))} hull`, FLOAT.hull));
     if (cost <= 0) box.appendChild(button('No damage', () => {}, 'wide', true));
-    else if (p.cash >= cost) box.appendChild(button(`Repair · ${money(cost)}`, fix, 'primary wide'));
-    else box.appendChild(button(p.cash > 0 ? `Repair ${money(p.cash)} worth` : 'No cash', fix, 'primary wide', p.cash <= 0));
-    box.appendChild(el('p', 'note', 'Falls, rockfalls, gas pockets, steam, magma and heat all wear down the hull. At zero the rig is wrecked and towed home, and the cargo is lost.'));
+    else if (p.cash >= cost) box.appendChild(button(`${SPACE}Repair · ${money(cost)}`, fix, 'primary wide'));
+    else box.appendChild(button(p.cash > 0 ? `${SPACE}Repair ${money(p.cash)} worth` : 'No cash', fix, 'primary wide', p.cash <= 0));
+    this.confirm = cost > 0 && p.cash > 0 ? fix : () => this.closePanel();
+    box.appendChild(el('p', 'note', 'Falls, rockfalls, gas pockets, steam, magma and heat all wear down the hull. At zero the rig is lost with the ore on board, and you start again from the station.'));
     box.appendChild(this.cashLine());
     return box;
   }
@@ -701,70 +875,79 @@ export class UI {
     const p = this.s.player;
     const box = el('div', 'pnl');
     const grid = box.appendChild(el('div', 'shop-items'));
-    for (const k of ITEM_ORDER) {
+    this.sel = Math.max(0, Math.min(ITEM_ORDER.length - 1, this.sel));
+    ITEM_ORDER.forEach((k, i) => {
       const it = ITEMS[k];
       const have = p.items[k] ?? 0;
-      const card = grid.appendChild(el('div', 'it'));
+      const picked = i === this.sel;
+      const card = grid.appendChild(el('div', `it${picked ? ' sel' : ''}`));
       card.appendChild(el('div', 'it-h', `${icon(k)}<b>${it.name}</b><span class="dim">${have}/${ITEM_STACK}</span>`));
       card.appendChild(el('p', 'note', `${it.blurb} Key ${it.hotkey}.`));
-      card.appendChild(button(money(it.cost), () => this.run({ a: 'buy', k }), '', p.cash < it.cost || have >= ITEM_STACK));
-    }
+      const buy = () => {
+        this.sel = i;
+        this.run({ a: 'buy', k }, () => this.hooks.float(`+${it.name}`, FLOAT.gear));
+      };
+      card.appendChild(button(`${picked ? SPACE : ''}${money(it.cost)}`, buy, '', p.cash < it.cost || have >= ITEM_STACK));
+      if (picked) this.confirm = buy;
+    });
+    this.nav = this.gridNav(ITEM_ORDER.length);
+    box.appendChild(el('p', 'note keys', '<kbd>←</kbd><kbd>→</kbd><kbd>↑</kbd><kbd>↓</kbd> pick · <kbd>Space</kbd> buy · <kbd>E</kbd> leave'));
     box.appendChild(this.cashLine());
     return box;
   }
 
+  /** Online, with other miners around: an empty tank strands you instead of ending the rig. */
   showStalled(): void {
     this.openPanel('Out of fuel', () => {
       const p = this.s.player;
       const box = el('div', 'pnl');
-      box.appendChild(el('p', '', `Your tank is dry at <b>${meters(rigDepth(p.rig))}</b>. The rig won't move.`));
-      if ((p.items.fuelcell ?? 0) > 0) {
-        box.appendChild(button(`Use a Fuel Cell (${p.items.fuelcell} left)`, () => {
-          this.closePanel();
-          this.s.act({ a: 'use', k: 'fuelcell' });
-        }, 'primary wide'));
-      }
+      const where = p.rig.grounded ? "The rig won't move." : 'The parachute is out and the rig is drifting down.';
+      box.appendChild(el('p', '', `Your tank is dry at <b>${meters(rigDepth(p.rig))}</b>. ${where}`));
+      const others = Math.max(1, this.s.onlineCount() - 1);
+      box.appendChild(el('p', 'note', `Your SOS is out to ${others === 1 ? 'the other miner' : `the ${others} other miners`} on the ice, with an arrow pointing your way. Anyone with a Fuel Cell can park next to you and refuel you. You keep your ore and pay them ${money(rescueFee(p))}.`));
+      box.appendChild(button(`${SPACE}Keep waiting`, () => this.closePanel(), 'primary wide'));
+      this.confirm = () => this.closePanel();
       if ((p.items.beacon ?? 0) > 0) {
         box.appendChild(button(`Use a Recall Beacon and keep your ore (${p.items.beacon} left)`, () => {
           this.closePanel();
           this.s.act({ a: 'use', k: 'beacon' });
         }, 'wide'));
       }
-      const others = this.s.online ? this.s.mapPeers().length : 0;
-      const fee = money(towFee(p));
-      if (this.s.online && this.s.sosSent) {
-        box.appendChild(el('p', 'note', `SOS sent. Anyone with a Fuel Cell can park next to you and refuel you. You keep your ore and pay them ${fee}, what a tow would cost.`));
-        box.appendChild(button('Keep waiting', () => this.closePanel(), 'wide'));
-      } else if (others > 0) {
-        box.appendChild(button(`Send an SOS and wait (${others} out on the ice)`, () => {
-          this.s.sos();
-          this.closePanel();
-        }, 'wide'));
-        box.appendChild(el('p', 'note', `A miner with a Fuel Cell can refuel you where you are. You keep your ore and pay them ${fee}.`));
-      }
-      box.appendChild(this.towButton('Call a tow'));
+      const lost = cargoCount(p);
+      box.appendChild(button(`Give up and respawn${lost ? ` · lose ${lost} ore` : ''}`, () => {
+        this.closePanel(false);
+        this.hooks.giveUp();
+      }, 'wide danger'));
+      box.appendChild(el('p', 'note', 'Giving up costs the ore on board and nothing else. You start again at the station with a full tank and hull.'));
       return box;
     }, false, 'stall');
   }
 
-  showWrecked(): void {
-    this.openPanel('Rig wrecked', () => {
-      const box = el('div', 'pnl');
-      box.appendChild(el('p', '', 'The hull gave out. A salvage crew can haul what is left back to the station.'));
-      box.appendChild(this.towButton('Call salvage'));
-      return box;
-    }, false, 'wreck');
+  // ------------------------------------------------------------ cutscenes
+
+  /** While a cutscene plays: black bars, no HUD, no panels. */
+  setBusy(on: boolean): void {
+    this.busy = on;
+    this.root.classList.toggle('cine', on);
+    if (on) {
+      this.prompt.classList.remove('show');
+      this.promptKey = '';
+    }
   }
 
-  private towButton(label: string): HTMLElement {
-    const p = this.s.player;
-    const fee = towFee(p);
-    const lost = cargoCount(p);
-    return button(`${label} · ${money(fee)}${lost ? `, lose ${lost} ore` : ''}`, () => {
-      const r = this.s.act({ a: 'tow' });
-      this.closePanel();
-      if (r.ok) this.toast(`Towed back to Rime Station for ${money(r.total ?? fee)}.`, 'warn', 3200);
-    }, 'wide');
+  showDeath(cause: HurtCause, depth: number, lost: number, value: number): void {
+    const d = DEATHS[cause];
+    const where = depth > 0.5 ? meters(depth) : 'the surface';
+    const radio = d.radio[Math.floor(Math.random() * d.radio.length)];
+    const loss = lost ? `Lost ${lost} ore worth ${money(value)}.` : 'The cargo bay was empty.';
+    this.death.innerHTML = `<b>${d.title}</b><span>${d.sub} at ${where}</span><em>${radio}</em><small>${loss} Cash, upgrades and items are safe.</small>`;
+    this.death.classList.add('show');
+    // A layer banner would sit right on top of it.
+    this.banner.classList.remove('show');
+  }
+
+  hideDeath(): void {
+    this.death.classList.remove('show');
   }
 
   showDisconnected(reason: string, retry: () => void): void {
@@ -778,10 +961,12 @@ export class UI {
   }
 
   openMenu(): void {
+    if (this.busy) return;
     this.openPanel('Menu', () => {
       const p = this.s.player;
       const box = el('div', 'pnl');
-      box.appendChild(button('Resume', () => this.closePanel(), 'primary wide'));
+      this.confirm = () => this.closePanel();
+      box.appendChild(button(`${SPACE}Resume`, () => this.closePanel(), 'primary wide'));
       box.appendChild(button('Map', () => this.openMap(), 'wide'));
       box.appendChild(button(this.sfx.muted ? 'Sound: off' : 'Sound: on', () => {
         this.sfx.setMuted(!this.sfx.muted);
@@ -807,13 +992,20 @@ export class UI {
         }, 'wide danger'));
       }
       box.appendChild(
-        el('p', 'note', `Deepest: <b>${meters(p.stats.deepest)}</b> · Earned: <b>${money(p.stats.earned)}</b> · Trips sold: <b>${p.stats.trips}</b> · Tiles dug: <b>${p.stats.dug}</b>${p.stats.rescues ? ` · Rescues: <b>${p.stats.rescues}</b>` : ''}`),
+        el('p', 'note', `Deepest: <b>${meters(p.stats.deepest)}</b> · Earned: <b>${money(p.stats.earned)}</b> · Trips sold: <b>${p.stats.trips}</b> · Tiles dug: <b>${p.stats.dug}</b>${p.stats.rescues ? ` · Rescues: <b>${p.stats.rescues}</b>` : ''}${p.stats.deaths ? ` · Rigs lost: <b>${p.stats.deaths}</b>` : ''}`),
       );
       box.appendChild(el('p', 'note dim', `Permafrost v${__APP_VERSION__}. ${this.s.online ? 'Saved on the server.' : 'Saved in this browser.'}`));
       return box;
     });
   }
 }
+
+const NAV_KEYS: Record<string, [number, number]> = {
+  ArrowLeft: [-1, 0], KeyA: [-1, 0],
+  ArrowRight: [1, 0], KeyD: [1, 0],
+  ArrowUp: [0, -1], KeyW: [0, -1],
+  ArrowDown: [0, 1], KeyS: [0, 1],
+};
 
 type Prompt = { kind: 'building'; b: Building } | { kind: 'stall' } | { kind: 'aid'; id: string; name: string };
 

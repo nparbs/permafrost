@@ -1,7 +1,7 @@
 {
   "name": "permafrost",
   "private": true,
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "Drill down through a frozen planet, haul ore back up, upgrade your rig. Shared online world.",
   "type": "module",
   "scripts": {
@@ -15,7 +15,9 @@
     "server": "node scripts/build-server.mjs && node --disable-warning=ExperimentalWarning dist-server/index.mjs",
     "mp": "node scripts/mp.mjs",
     "ship": "node scripts/ship.mjs",
-    "uicheck": "node scripts/ui-check.mjs"
+    "uicheck": "node scripts/ui-check.mjs",
+    "cinecheck": "node scripts/cine-check.mjs",
+    "soscheck": "node scripts/sos-check.mjs"
   },
   "dependencies": {
     "@fontsource/silkscreen": "5.3.0",

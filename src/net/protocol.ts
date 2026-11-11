@@ -5,7 +5,7 @@ import type { Player, PlayerStats, Rig } from '../sim/player';
 import type { Input, SimEvent } from '../sim/rig';
 
 /** Bump when old pages can't talk to a new server. They're told to refresh. */
-export const PROTOCOL_VERSION = 3;
+export const PROTOCOL_VERSION = 4;
 
 export const packInput = (i: Input): number => (i.left ? 1 : 0) | (i.right ? 2 : 0) | (i.up ? 4 : 0) | (i.down ? 8 : 0);
 export const unpackInput = (b: number): Input => ({ left: (b & 1) > 0, right: (b & 2) > 0, up: (b & 4) > 0, down: (b & 8) > 0 });
@@ -23,9 +23,9 @@ export interface PeerInfo {
 export const RigMode = { Idle: 0, Moving: 1, DrillSide: 2, DrillDown: 3 } as const;
 export const RIG_THRUST = 1;
 export const RIG_WRECKED = 2;
-/** Out of fuel underground. */
+/** Out of fuel underground, waiting for help. */
 export const RIG_STALLED = 4;
-/** Stalled and asking for help. */
+/** Stalled, and the SOS has gone out. */
 export const RIG_SOS = 8;
 
 /** Another rig, as nearby players see it: [id, x, y, facing, mode, flags]. */
@@ -50,7 +50,7 @@ export type ClientMsg =
   | { t: 'act'; id: number; act: Action }
   | { t: 'chat'; text: string }
   | { t: 'profile'; name: string; paint: number }
-  /** Ask everyone for fuel. Only works while stalled. */
+  /** Ask everyone for fuel. Only works while stalled. The server also sends one out by itself when a rig stalls. */
   | { t: 'sos' }
   /** Give a Fuel Cell to the stalled miner `id` parked next to you. */
   | { t: 'aid'; id: string };
@@ -58,8 +58,8 @@ export type ClientMsg =
 export type ServerMsg =
   /** `now` is the server's clock in ms, so weather and steam vents line up. */
   | { t: 'welcome'; v: number; token: string; you: PeerInfo; world: WorldInfo; player: Player; peers: PeerInfo[]; online: number; now: number }
-  /** Your rig as the server has it after input `ack`. */
-  | { t: 'snap'; ack: number; rig: Rig; cargo: Record<string, number>; stats: PlayerStats }
+  /** Your rig as the server has it after input `ack`. Items are here because an empty tank burns a Fuel Cell. */
+  | { t: 'snap'; ack: number; rig: Rig; cargo: Record<string, number>; items: Player['items']; stats: PlayerStats }
   /** Your full state, after anything changes your cash, upgrades or items. */
   | { t: 'me'; player: Player }
   | { t: 'res'; id: number; res: ActResult }

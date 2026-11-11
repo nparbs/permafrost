@@ -1,7 +1,7 @@
 // Draws the session: tilemap, station, rig, particles and the polar sky.
 
 import Phaser from 'phaser';
-import { RIG_H, statsOf } from '../sim/player';
+import { RIG_H, RIG_W, statsOf, type HurtCause } from '../sim/player';
 import { RIG_SOS, RIG_STALLED, RIG_THRUST, RIG_WRECKED, RigMode } from '../net/protocol';
 import { FLARE } from '../sim/items';
 import { rigDepth } from '../sim/rig';
@@ -9,12 +9,51 @@ import { MINERALS, T, isDiggable, isSolid } from '../sim/tiles';
 import { blizzardAt, ventActive, windDir } from '../sim/weather';
 import { SKY } from '../sim/world';
 import type { GameSession, SessionEvent } from './session';
-import { LAYER_PAL, TS, debrisColor, frameFor, makeTextures, overIndex, rgbNum, tileFrame, visIndex } from './textures';
+import { LAYER_PAL, PAINTS, TS, debrisColor, frameFor, makeTextures, overIndex, rgbNum, tileFrame, visIndex } from './textures';
+
+/** Moments in a cutscene that want a sound. */
+export type Cue = 'sputter' | 'freeze' | 'crash' | 'boom' | 'hiss' | 'rotor' | 'land';
 
 export interface SceneData {
   session: GameSession;
   onFrame?: (scene: GameScene) => void;
+  onCue?: (cue: Cue) => void;
 }
+
+/** A cutscene in progress. While one runs, it moves the rig sprite and the simulation doesn't. */
+interface Cine {
+  kind: 'death' | 'arrive';
+  cause: HurtCause;
+  /** Death: 'drop' (the wreck falls), 'main' (the scene for its cause), 'fade'. Arrival: 'main'. */
+  phase: 'drop' | 'main' | 'fade';
+  /** Seconds into the current phase. */
+  t: number;
+  x: number;
+  y: number;
+  vy: number;
+  /** Where the sprite comes to rest, in pixels. */
+  rest: number;
+  /** Countdown to the next puff or spark. */
+  tick: number;
+  /** One-off moments already played. */
+  marks: Set<string>;
+  done: () => void;
+}
+
+interface PeerSprite {
+  rig: Phaser.GameObjects.Sprite;
+  flame: Phaser.GameObjects.Image;
+  chute: Phaser.GameObjects.Image;
+  tag: Phaser.GameObjects.Text;
+  paint: number;
+  /** How this miner's rig was lost and when (scene clock), while the wreck is still lying there. */
+  dead: { cause: HurtCause; at: number } | null;
+}
+
+const lerpColor = (a: number, b: number, k: number): number => {
+  const ch = (s: number) => Math.round(((a >> s) & 255) + (((b >> s) & 255) - ((a >> s) & 255)) * k);
+  return (ch(16) << 16) | (ch(8) << 8) | ch(0);
+};
 
 /** Radius of the hole a drilling rig carves, in pixels. */
 const BITE_R = 8.5;
@@ -70,7 +109,16 @@ export class GameScene extends Phaser.Scene {
   private steamTimer = 0;
   private dustTimer = 0;
   private flash = 0;
-  private peerSprites = new Map<string, { rig: Phaser.GameObjects.Sprite; flame: Phaser.GameObjects.Image; tag: Phaser.GameObjects.Text; paint: number }>();
+  private smoke!: Phaser.GameObjects.Particles.ParticleEmitter;
+  private chute!: Phaser.GameObjects.Image;
+  private lifter!: Phaser.GameObjects.Image;
+  private cable!: Phaser.GameObjects.Graphics;
+  private cine: Cine | null = null;
+  /** How much of the headlamp is left: a dying rig's lamp flickers out. */
+  private lampK = 1;
+  private floatAt = 0;
+  private floatN = 0;
+  private peerSprites = new Map<string, PeerSprite>();
   private bubbles = new Map<string, { text: Phaser.GameObjects.Text; until: number }>();
 
   constructor() {
@@ -86,6 +134,8 @@ export class GameScene extends Phaser.Scene {
     this.flares = [];
     this.peerSprites = new Map();
     this.bubbles = new Map();
+    this.cine = null;
+    this.lampK = 1;
     makeTextures(this);
     const world = this.session.world;
     const W = world.w * TS;
@@ -173,12 +223,25 @@ export class GameScene extends Phaser.Scene {
       scale: { start: 0.9, end: 2.4 },
       alpha: { start: 0.6, end: 0 },
     }).setDepth(6.5);
+    this.smoke = this.add.particles(0, 0, 'puff', {
+      emitting: false,
+      lifespan: { min: 700, max: 1300 },
+      speedY: { min: -34, max: -14 },
+      speedX: { min: -10, max: 10 },
+      scale: { start: 0.8, end: 2.6 },
+      alpha: { start: 0.75, end: 0 },
+      tint: 0x343840,
+    }).setDepth(6.4);
+    this.chute = this.add.image(0, 0, 'chute').setOrigin(0.5, 1).setDepth(5.1).setVisible(false);
+    this.lifter = this.add.image(0, 0, 'lifter', 'l0').setOrigin(0.5, 0).setDepth(5.2).setVisible(false);
+    this.cable = this.add.graphics().setDepth(5.05);
     this.fog = this.add.rectangle(0, 0, 8, 8, 0xdde8f4, 0).setOrigin(0).setScrollFactor(0).setDepth(7.7);
 
     const cam = this.cameras.main;
     cam.setBounds(0, 0, W, H);
     cam.setBackgroundColor('#04060f');
     cam.setRoundPixels(true);
+    cam.resetFX();
     this.applyZoom();
     this.syncRig(0);
     cam.startFollow(this.rig, true, 0.2, 0.2);
@@ -255,6 +318,10 @@ export class GameScene extends Phaser.Scene {
   }
 
   private syncRig(dt: number): void {
+    if (this.cine) {
+      this.stepCine(this.cine, dt);
+      return;
+    }
     const r = this.session.player.rig;
     const pos = this.session.renderPos();
     const px = pos.x * TS;
@@ -269,6 +336,10 @@ export class GameScene extends Phaser.Scene {
 
     this.flame.setVisible(r.thrusting);
     if (r.thrusting) this.flame.setPosition(px, py + (RIG_H / 2) * TS + 4).setFrame(`f${anim}`);
+    // Out of fuel in the air: the parachute is out.
+    const chute = r.stalled && !r.grounded && !r.wrecked;
+    this.chute.setVisible(chute);
+    if (chute) this.chute.setPosition(px + Math.round(Math.sin(this.time.now / 400)), py - 7);
 
     if (r.wrecked) this.rig.setTint(0x3a3a3a);
     else if (this.flash > 0) {
@@ -373,8 +444,8 @@ export class GameScene extends Phaser.Scene {
       rt.stamp('light', undefined, x - rt.x, y - rt.y, { scale: (radius * 2) / 128, alpha, erase: true });
     };
     const lamp = statsOf(this.session.player).lamp;
-    light(this.rig.x, this.rig.y, lamp * TS * 1.3, 1);
-    light(this.rig.x, this.rig.y, 1.4 * TS, 1);
+    if (this.lampK > 0.02) light(this.rig.x, this.rig.y, lamp * TS * 1.3 * this.lampK, 1);
+    light(this.rig.x, this.rig.y, 1.4 * TS, Math.max(0.5, this.lampK));
     for (const s of this.peerSprites.values()) if (s.rig.visible) light(s.rig.x, s.rig.y, 5 * TS * 1.3, 0.9);
     const t = this.time.now;
     for (const f of this.flares) {
@@ -538,8 +609,10 @@ export class GameScene extends Phaser.Scene {
         s = {
           rig: this.add.sprite(0, 0, `rig${p.paint}`, 'idle0').setDepth(4.5),
           flame: this.add.image(0, 0, 'flame', 'f0').setDepth(4.4),
+          chute: this.add.image(0, 0, 'chute').setOrigin(0.5, 1).setDepth(4.6).setVisible(false),
           tag: this.label(p.name, '#cfe6ff', 6).setOrigin(0.5, 1).setDepth(8).setAlpha(0.85),
           paint: p.paint,
+          dead: null,
         };
         this.peerSprites.set(p.id, s);
       }
@@ -559,10 +632,15 @@ export class GameScene extends Phaser.Scene {
       else if (p.mode === RigMode.DrillSide) frame = `side${anim}`;
       else if (p.mode === RigMode.Moving) frame = `idle${anim}`;
       s.rig.setFrame(frame).setFlipX(p.facing < 0).setPosition(px, py);
-      if (p.flags & RIG_WRECKED) s.rig.setTint(0x3a3a3a);
-      else s.rig.clearTint();
+      if (p.flags & RIG_WRECKED) this.wreckLook(s, px, py, p.facing);
+      else if (s.dead || s.rig.isTinted) {
+        s.dead = null;
+        s.rig.setScale(1).setAngle(0).clearTint();
+      }
       s.flame.setVisible((p.flags & RIG_THRUST) > 0).setPosition(px, py + (RIG_H / 2) * TS + 4).setFrame(`f${anim}`);
-      s.tag.setPosition(px, py - 8);
+      const floating = stuck && !isSolid(world.get(Math.floor(p.x), Math.floor(p.y + RIG_H / 2 + 0.1)));
+      s.chute.setVisible(floating).setPosition(px, py - 7);
+      s.tag.setPosition(px, py - (floating ? 20 : 8));
       if (p.mode >= RigMode.DrillSide && Math.random() < 0.35) {
         const tx = p.mode === RigMode.DrillDown ? Math.floor(p.x) : Math.floor(p.x + p.facing * 0.45);
         const ty = p.mode === RigMode.DrillDown ? Math.floor(p.y + RIG_H / 2 + 0.05) : Math.floor(p.y);
@@ -574,6 +652,7 @@ export class GameScene extends Phaser.Scene {
       if (live.has(id)) continue;
       s.rig.destroy();
       s.flame.destroy();
+      s.chute.destroy();
       s.tag.destroy();
       this.peerSprites.delete(id);
     }
@@ -672,6 +751,14 @@ export class GameScene extends Phaser.Scene {
       case 'chat':
         this.showBubble(e.id, e.text);
         break;
+      case 'peer-wrecked': {
+        const s = this.peerSprites.get(e.id);
+        if (!s) break;
+        s.dead = { cause: e.cause, at: this.time.now };
+        this.wreckBurst(e.x * TS, e.y * TS, e.cause, s.paint);
+        this.shakeNear(Math.floor(e.x), Math.floor(e.y), e.cause === 'gas' ? 320 : 200, e.cause === 'fuel' ? 0 : 0.012);
+        break;
+      }
       case 'loose': {
         const t = world.get(e.x, e.y);
         if (t !== T.AIR) this.looseAt(e.x, e.y, t);
@@ -700,22 +787,341 @@ export class GameScene extends Phaser.Scene {
       case 'flare':
         this.addFlare(e.x, e.y, 0);
         break;
-      case 'wrecked':
-        this.cameras.main.shake(400, 0.015);
-        this.sparks.setParticleTint(0xff6020);
-        this.sparks.emitParticleAt(r.x * TS, r.y * TS, 40);
-        break;
       default:
         break;
     }
   }
 
-  floatText(x: number, y: number, text: string, color: string): void {
+  floatText(x: number, y: number, text: string, color: string, ms = 1000, rise = 16): void {
     const t = this.add
       .text(x, y, text, { fontFamily: 'Silkscreen, monospace', fontSize: '8px', color, stroke: '#000000', strokeThickness: 2, resolution: 4 })
       .setOrigin(0.5, 1)
       .setDepth(9);
-    this.tweens.add({ targets: t, y: y - 16, alpha: 0, duration: 1000, ease: 'Quad.easeOut', onComplete: () => t.destroy() });
+    this.tweens.add({ targets: t, y: y - rise, alpha: 0, duration: ms, ease: 'Quad.easeIn', onComplete: () => t.destroy() });
+  }
+
+  /** A "+$240" or "+12 L" over your rig, for station sales and purchases. Quick ones stack upward. */
+  floatAtRig(text: string, color: string): void {
+    const now = this.time.now;
+    this.floatN = now - this.floatAt < 900 ? this.floatN + 1 : 0;
+    this.floatAt = now;
+    this.floatText(this.rig.x, this.rig.y - 9 - this.floatN * 9, text, color, 1500, 22);
+  }
+
+  // ------------------------------------------------------------ other miners' wrecks
+
+  /** The burst when another miner's rig is lost near you. Your own end is a full cutscene (below). */
+  private wreckBurst(x: number, y: number, cause: HurtCause, paint: number): void {
+    if (cause === 'fuel') {
+      this.sparks.setParticleTint(0xcfeeff);
+      this.sparks.emitParticleAt(x, y, 16);
+      return;
+    }
+    if (cause === 'gas') {
+      for (const [delay, color] of [[0, 0xffe090], [90, 0xff8a30]]) {
+        const ring = this.add.circle(x, y, 4, color, 0.85).setDepth(8).setBlendMode(Phaser.BlendModes.ADD);
+        this.tweens.add({ targets: ring, radius: 3.2 * TS, alpha: 0, duration: 420, delay, onComplete: () => ring.destroy() });
+      }
+    }
+    const crushed = cause === 'fall' || cause === 'rock';
+    this.sparks.setParticleTint(crushed ? Phaser.Display.Color.HexStringToColor(PAINTS[paint] ?? PAINTS[0]).color : cause === 'gas' ? 0xffa030 : 0xff6020);
+    this.sparks.emitParticleAt(x, y, crushed ? 22 : 36);
+    this.dust.setParticleTint(0x8a8a90);
+    this.dust.emitParticleAt(x, y + 4, 22);
+    this.smoke.emitParticleAt(x, y, 4);
+  }
+
+  /** How a wrecked miner's rig lies there until they respawn: frozen, crushed, charred or melted. */
+  private wreckLook(s: PeerSprite, px: number, py: number, facing: number): void {
+    const rig = s.rig;
+    if (!s.dead) {
+      // We weren't near when it happened.
+      rig.setTint(0x3a3a3a);
+      return;
+    }
+    const age = (this.time.now - s.dead.at) / 1000;
+    const k = Math.min(1, age / 1.4);
+    switch (s.dead.cause) {
+      case 'fuel':
+        rig.setTint(lerpColor(0xffffff, 0x7fc4ff, k));
+        break;
+      case 'fall':
+      case 'rock': {
+        const sy = s.dead.cause === 'rock' ? 0.4 : 0.6;
+        rig.setScale(1.2, sy).setPosition(px, py + (1 - sy) * 8).setTint(0x6a6a6a);
+        break;
+      }
+      case 'gas':
+        rig.setTint(0x2a2a2a).setAngle(16 * facing);
+        break;
+      default: {
+        const sy = 1 - 0.5 * k;
+        rig.setScale(1 + 0.15 * k, sy).setPosition(px, py + (1 - sy) * 8);
+        rig.setTint(k < 0.5 ? lerpColor(0xffffff, 0xff8a30, k * 2) : lerpColor(0xff8a30, 0x3a1408, (k - 0.5) * 2));
+        break;
+      }
+    }
+    if (s.dead.cause !== 'fuel' && age < 2.5 && Math.random() < 0.12) this.smoke.emitParticleAt(px + (Math.random() - 0.5) * 10, py - 2, 1);
+  }
+
+  // ------------------------------------------------------------ cutscenes
+
+  get inCutscene(): boolean {
+    return this.cine !== null;
+  }
+
+  private cue(c: Cue): void {
+    this.hooks.onCue?.(c);
+  }
+
+  private resetRigLook(): void {
+    this.rig.setScale(1).setAngle(0).clearTint();
+    this.flame.setVisible(false);
+    this.chute.setVisible(false);
+    this.lampK = 1;
+  }
+
+  /** The pixel row where a rig falling from (x, y) in tiles would come to rest. */
+  private restBelow(x: number, y: number): number {
+    const w = this.session.world;
+    const x0 = Math.floor(x - RIG_W / 2 + 0.001);
+    const x1 = Math.floor(x + RIG_W / 2 - 0.001);
+    for (let ty = Math.floor(y + RIG_H / 2 + 0.02); ty < w.h; ty++) {
+      for (let tx = x0; tx <= x1; tx++) if (isSolid(w.get(tx, ty))) return (ty - RIG_H / 2) * TS;
+    }
+    return y * TS;
+  }
+
+  /**
+   * The rig's last moments, by what killed it: a dry tank freezes over in the dark, a hard
+   * landing or a rockfall crushes it, gas blows it apart, and heat melts it down. A wreck in
+   * mid-air drops first. `done` runs once the screen has faded out.
+   */
+  playDeath(cause: HurtCause, done: () => void): void {
+    const pos = this.session.renderPos();
+    this.resetRigLook();
+    const y = pos.y * TS;
+    const rest = this.restBelow(pos.x, pos.y);
+    this.cine = { kind: 'death', cause, phase: rest - y > 3 ? 'drop' : 'main', t: 0, x: pos.x * TS, y, vy: 0, rest, tick: 0, marks: new Set(), done };
+    this.rig.setFrame('idle0').setPosition(this.cine.x, y);
+  }
+
+  /** The station's sky crane sets the rig down on the pad, then leaves. */
+  playArrival(done: () => void): void {
+    const sp = this.session.world.spawn();
+    this.resetRigLook();
+    const rest = (sp.y - RIG_H / 2) * TS;
+    const x = sp.x * TS;
+    const y = rest - 6.5 * TS;
+    this.cine = { kind: 'arrive', cause: 'fall', phase: 'main', t: 0, x, y, vy: 0, rest, tick: 0, marks: new Set(), done };
+    this.rig.setFrame('idle0').setFlipX(this.session.player.rig.facing < 0).setPosition(x, y);
+    const cam = this.cameras.main;
+    cam.centerOn(x, y + 2 * TS);
+    cam.fadeIn(450, 2, 4, 10);
+  }
+
+  /** Cut a cutscene short: a death jumps to its fade, an arrival to the rig on the pad. */
+  skipCutscene(): void {
+    const c = this.cine;
+    if (!c) return;
+    if (c.kind === 'arrive') this.endArrival(c);
+    else if (c.phase !== 'fade' && (c.phase === 'drop' || c.t > 0.5)) this.fadeOut(c);
+  }
+
+  private fadeOut(c: Cine): void {
+    c.phase = 'fade';
+    c.t = 0;
+    this.cameras.main.fadeOut(320, 2, 4, 10);
+  }
+
+  private endArrival(c: Cine): void {
+    this.rig.setPosition(c.x, c.rest);
+    this.lifter.setVisible(false);
+    this.cable.clear();
+    this.cine = null;
+    c.done();
+  }
+
+  private stepCine(c: Cine, dt: number): void {
+    c.t += dt;
+    c.tick -= dt;
+    if (c.kind === 'arrive') {
+      this.stepArrival(c);
+    } else if (c.phase === 'drop') {
+      const facing = this.session.player.rig.facing;
+      c.vy = Math.min(15 * TS, c.vy + 22 * TS * dt);
+      c.y += c.vy * dt;
+      this.rig.angle += 240 * dt * facing;
+      if (c.tick <= 0) {
+        c.tick = 0.07;
+        this.smoke.emitParticleAt(c.x, c.y - 6, 1);
+      }
+      if (c.y >= c.rest) {
+        c.y = c.rest;
+        c.phase = 'main';
+        c.t = 0;
+        this.rig.setAngle(0);
+        // A hard landing gets its own crash in the main scene; the others land with a thump first.
+        if (c.cause !== 'fall' && c.cause !== 'rock') {
+          this.cue('crash');
+          this.cameras.main.shake(260, 0.014);
+          this.dust.setParticleTint(0xc8d4e4);
+          this.dust.emitParticleAt(c.x, c.y + 7, 14);
+        }
+      }
+      this.rig.setPosition(c.x, c.y);
+    } else if (c.phase === 'main') {
+      this.stepDeath(c);
+    } else if (c.t > 0.36) {
+      // Faded out. The cutscene stays in charge until the arrival replaces it, so the sprite never jumps.
+      c.t = -Infinity;
+      c.done();
+    }
+  }
+
+  private stepDeath(c: Cine): void {
+    const t = c.t;
+    const once = (k: string) => !c.marks.has(k) && !!c.marks.add(k);
+    const every = (s: number) => c.tick <= 0 && ((c.tick = s), true);
+    const cam = this.cameras.main;
+    const rig = this.rig;
+    const { x, y } = c;
+    const r = this.session.player.rig;
+    const ground = debrisColor(this.session.world, Math.floor(r.x), Math.floor(r.y + 1), this.session.world.get(Math.floor(r.x), Math.floor(r.y + 1)));
+    let end = 2.2;
+    switch (c.cause) {
+      case 'fuel': {
+        end = 2.9;
+        if (once('start')) this.cue('sputter');
+        if (t < 1) {
+          // The engine coughs and the lamp flickers.
+          this.lampK = (Math.sin(t * 38) > 0.1 ? 1 : 0.2) * (1 - t * 0.45);
+          rig.setPosition(x + (Math.floor(t * 28) % 2), y);
+          if (every(0.15)) this.smoke.emitParticleAt(x - 4 * r.facing, y - 9, 1);
+        } else {
+          // Then the cold moves in.
+          const k = Math.min(1, (t - 1) / 1.3);
+          this.lampK = 0.5 * (1 - k);
+          rig.setPosition(x, y).setTint(lerpColor(0xffffff, 0x7fc4ff, k));
+          if (every(0.06)) {
+            this.dust.setParticleTint(0xe8f6ff);
+            this.dust.emitParticleAt(x + (Math.random() - 0.5) * 22, y - 4 - Math.random() * 10, 1);
+          }
+          if (k >= 1 && once('ice')) {
+            this.cue('freeze');
+            this.sparks.setParticleTint(0xcfeeff);
+            this.sparks.emitParticleAt(x, y, 22);
+            cam.shake(120, 0.004);
+          }
+        }
+        break;
+      }
+      case 'fall':
+      case 'rock': {
+        if (once('start')) {
+          this.cue('crash');
+          cam.shake(420, 0.02);
+          cam.flash(110, 255, 255, 255);
+          const sy = c.cause === 'rock' ? 0.4 : 0.6;
+          rig.setScale(1.2, sy).setPosition(x, y + (1 - sy) * 8).setTint(0x6a6a6a);
+          this.dust.setParticleTint(c.cause === 'rock' ? 0x8a8a90 : ground);
+          this.dust.emitParticleAt(x, y + 6, 28);
+          this.sparks.setParticleTint(Phaser.Display.Color.HexStringToColor(PAINTS[this.session.paint] ?? PAINTS[0]).color);
+          this.sparks.emitParticleAt(x, y, 24);
+        }
+        if (t < 1.6 && every(0.11)) {
+          this.smoke.emitParticleAt(x + (Math.random() - 0.5) * 10, y - 2, 1);
+          if (Math.random() < 0.4) {
+            this.sparks.setParticleTint(0xffb040);
+            this.sparks.emitParticleAt(x + (Math.random() - 0.5) * 12, y, 2);
+          }
+        }
+        break;
+      }
+      case 'gas': {
+        if (once('start')) {
+          this.cue('boom');
+          cam.shake(500, 0.022);
+          cam.flash(160, 255, 210, 130);
+          rig.setTint(0x2a2a2a).setAngle(16 * r.facing);
+          this.sparks.setParticleTint(0xffa030);
+          this.sparks.emitParticleAt(x, y, 44);
+          this.dust.setParticleTint(0x8a8a90);
+          this.dust.emitParticleAt(x, y, 30);
+          for (const [delay, color] of [[0, 0xffe090], [90, 0xff8a30]]) {
+            const ring = this.add.circle(x, y, 4, color, 0.85).setDepth(8).setBlendMode(Phaser.BlendModes.ADD);
+            this.tweens.add({ targets: ring, radius: 3.2 * TS, alpha: 0, duration: 420, delay, onComplete: () => ring.destroy() });
+          }
+        }
+        if (t < 1.7 && every(0.09)) this.smoke.emitParticleAt(x + (Math.random() - 0.5) * 14, y - 2, 1);
+        break;
+      }
+      default: {
+        // Magma, heat and steam: the rig glows, sags and gives out.
+        end = 2.5;
+        if (once('start')) this.cue('hiss');
+        const k = Math.min(1, t / 1.7);
+        const tint = k < 0.5 ? lerpColor(0xffffff, 0xff8a30, k * 2) : lerpColor(0xff8a30, 0x3a1408, (k - 0.5) * 2);
+        const sy = 1 - 0.5 * k;
+        rig.setScale(1 + 0.15 * k, sy).setPosition(x, y + (1 - sy) * 8).setTint(tint);
+        if (k < 1 && every(0.06)) {
+          if (c.cause === 'steam') this.steam.emitParticleAt(x + (Math.random() - 0.5) * 12, y, 1);
+          else {
+            this.sparks.setParticleTint(0xff7a20);
+            this.sparks.emitParticleAt(x + (Math.random() - 0.5) * 14, y + 4, 1);
+          }
+        }
+        if (k >= 1 && once('pop')) {
+          this.cue('boom');
+          cam.shake(260, 0.012);
+          this.sparks.setParticleTint(0xff6020);
+          this.sparks.emitParticleAt(x, y + 4, 34);
+          this.smoke.emitParticleAt(x, y, 5);
+        }
+        break;
+      }
+    }
+    if (t >= end) this.fadeOut(c);
+  }
+
+  private stepArrival(c: Cine): void {
+    const DOWN = 1.9;
+    const AWAY = 0.9;
+    const t = c.t;
+    const once = (k: string) => !c.marks.has(k) && !!c.marks.add(k);
+    if (once('start')) this.cue('rotor');
+    this.lifter.setVisible(true).setFrame(`l${Math.floor(this.time.now / 45) % 2}`);
+    const g = this.cable;
+    g.clear();
+    if (t < DOWN) {
+      const k = 1 - (1 - t / DOWN) ** 3;
+      const sway = Math.sin(t * 5) * 2 * (1 - k);
+      const y = c.y + (c.rest - c.y) * k;
+      this.rig.setPosition(c.x + sway, y);
+      this.lifter.setPosition(c.x + sway * 0.4, y - 34);
+      g.lineStyle(1, 0x9aa4b2).lineBetween(c.x + sway * 0.4, y - 23, c.x + sway, y - 8);
+      // Rotor wash kicks up snow as it nears the pad.
+      if (k > 0.75 && c.tick <= 0) {
+        c.tick = 0.05;
+        this.dust.setParticleTint(0xe6eef7);
+        this.dust.emitParticleAt(c.x + (Math.random() - 0.5) * 30, c.rest + 6, 1);
+      }
+      return;
+    }
+    if (once('land')) {
+      this.cue('land');
+      this.rig.setPosition(c.x, c.rest);
+      this.dust.setParticleTint(0xe6eef7);
+      this.dust.emitParticleAt(c.x, c.rest + 6, 12);
+      this.cameras.main.shake(90, 0.004);
+    }
+    const u = (t - DOWN) / AWAY;
+    const ly = c.rest - 34 - u * u * 9 * TS;
+    const lx = c.x + u * u * 4 * TS;
+    this.lifter.setPosition(lx, ly);
+    const len = 11 * Math.max(0, 1 - u * 3);
+    if (len > 0.5) g.lineStyle(1, 0x9aa4b2).lineBetween(lx, ly + 11, lx, ly + 11 + len);
+    if (t >= DOWN + AWAY) this.endArrival(c);
   }
 
   setPaint(i: number): void {

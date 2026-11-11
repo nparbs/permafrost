@@ -28,7 +28,7 @@ export const UPGRADES: Record<UpgradeKey, UpgradeLine> = {
     tiers: tiers(
       ['Stock Auger', 'Carbide Auger', 'Diamond Crown', 'Thermal Lance', 'Sonic Bore', 'Plasma Bore', 'Hearthcutter'],
       [1, 1.45, 2.1, 3, 4.2, 5.8, 7.5],
-      [0, 500, 1800, 6000, 16000, 40000, 90000],
+      [0, 200, 900, 3800, 13000, 36000, 85000],
     ),
   },
   hull: {
@@ -39,7 +39,7 @@ export const UPGRADES: Record<UpgradeKey, UpgradeLine> = {
     tiers: tiers(
       ['Tin Shell', 'Steel Plating', 'Ceramic Plating', 'Titanium Frame', 'Nanoweave Shell', 'Graphene Armor', 'Bastion Hull'],
       [30, 45, 70, 105, 150, 210, 300],
-      [0, 400, 1500, 5000, 14000, 35000, 80000],
+      [0, 150, 750, 3200, 11000, 32000, 75000],
     ),
   },
   engine: {
@@ -50,7 +50,7 @@ export const UPGRADES: Record<UpgradeKey, UpgradeLine> = {
     tiers: tiers(
       ['Diesel 40', 'Diesel 90 Turbo', 'Ion Pulse', 'Twin Ion', 'Fusion Torch', 'Antimatter Torch', 'Aurora Drive'],
       [1, 1.15, 1.32, 1.52, 1.75, 2.0, 2.3],
-      [0, 450, 1600, 5500, 15000, 38000, 85000],
+      [0, 180, 800, 3500, 12000, 34000, 80000],
     ),
   },
   tank: {
@@ -61,7 +61,7 @@ export const UPGRADES: Record<UpgradeKey, UpgradeLine> = {
     tiers: tiers(
       ['Jerry Tank', 'Long-Range Tank', 'Bladder Tank', 'Pressure Tank', 'Cryo Tank', 'Fusion Cell', 'Deep Reserve'],
       [10, 15, 22, 32, 45, 62, 85],
-      [0, 350, 1200, 4000, 12000, 30000, 70000],
+      [0, 120, 600, 2600, 9500, 27000, 66000],
     ),
   },
   cargo: {
@@ -72,7 +72,7 @@ export const UPGRADES: Record<UpgradeKey, UpgradeLine> = {
     tiers: tiers(
       ['Toolbox Bay', 'Hopper', 'Ore Skip', 'Twin Skip', 'Freight Pod', 'Compression Hold', 'Pocket Vault'],
       [8, 13, 20, 30, 44, 60, 80],
-      [0, 400, 1500, 5000, 14000, 36000, 82000],
+      [0, 150, 750, 3200, 11000, 32000, 78000],
     ),
   },
   heater: {
@@ -80,7 +80,7 @@ export const UPGRADES: Record<UpgradeKey, UpgradeLine> = {
     name: 'Heater',
     blurb: 'Keeps the rig working in the deep cold of the glacier.',
     format: (v) => `down to ${v}°C`,
-    tiers: tiers(['Glow Plug', 'Coolant Heater', 'Plasma Heater', 'Core Furnace'], [-50, -60, -72, -85], [0, 600, 2500, 8000]),
+    tiers: tiers(['Glow Plug', 'Coolant Heater', 'Plasma Heater', 'Core Furnace'], [-50, -60, -72, -85], [0, 400, 1800, 6500]),
   },
   radiator: {
     key: 'radiator',
@@ -90,7 +90,7 @@ export const UPGRADES: Record<UpgradeKey, UpgradeLine> = {
     tiers: tiers(
       ['Fan Radiator', 'Oil Cooler', 'Liquid Loop', 'Phase Cooler', 'Cryo Sink', 'Vacuum Shroud', 'Zero-Point Sink'],
       [40, 80, 130, 190, 260, 340, 420],
-      [0, 2000, 6000, 15000, 35000, 70000, 120000],
+      [0, 1500, 5000, 13000, 32000, 66000, 115000],
     ),
   },
   lamp: {
@@ -98,7 +98,7 @@ export const UPGRADES: Record<UpgradeKey, UpgradeLine> = {
     name: 'Headlamp',
     blurb: 'Lights further into the dark. Deep caves are pitch black.',
     format: (v) => `${v} tile reach`,
-    tiers: tiers(['Work Light', 'Halogen Bar', 'HID Beam', 'LED Array', 'Arc Lamp'], [4, 5.5, 7, 8.5, 10], [0, 300, 1200, 4000, 11000]),
+    tiers: tiers(['Work Light', 'Halogen Bar', 'HID Beam', 'LED Array', 'Arc Lamp'], [4, 5.5, 7, 8.5, 10], [0, 100, 500, 2200, 8000]),
   },
 };
 

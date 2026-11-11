@@ -620,6 +620,66 @@ function buildFlame(): HTMLCanvasElement {
   return toCanvas(px);
 }
 
+/** The station's sky crane, which sets new rigs down on the pad. Two frames, 32x12 each: rotors wide and narrow. */
+export const LIFTER_W = 32;
+export const LIFTER_H = 12;
+function buildLifter(): HTMLCanvasElement {
+  const px = new Px(LIFTER_W * 2, LIFTER_H);
+  const steel = hex('#5a6270');
+  const hull = hex('#3d4654');
+  for (let f = 0; f < 2; f++) {
+    const ox = f * LIFTER_W;
+    const R = (x: number, y: number, w: number, h: number, c: RGB, a = 255) => px.rect(ox + x, y, w, h, c, a);
+    const blade = hex('#cfd8e4');
+    if (f === 0) {
+      R(0, 0, 10, 1, blade, 170);
+      R(22, 0, 10, 1, blade, 170);
+    } else {
+      R(3, 0, 4, 1, blade, 220);
+      R(25, 0, 4, 1, blade, 220);
+    }
+    R(4, 1, 2, 2, steel);
+    R(26, 1, 2, 2, steel);
+    R(2, 3, 6, 3, hex('#262c36'));
+    R(24, 3, 6, 3, hex('#262c36'));
+    R(8, 4, 16, 2, steel);
+    R(10, 2, 12, 6, hull);
+    R(10, 2, 12, 1, hex('#5b6678'));
+    R(10, 7, 12, 1, hex('#262c36'));
+    R(12, 4, 4, 2, hex('#8fe0fb'));
+    R(12, 4, 1, 1, hex('#ffffff'));
+    R(17, 4, 4, 1, hex('#f2a81d'));
+    R(15, 8, 2, 2, steel);
+    R(14, 10, 4, 1, hex('#8a8a94'));
+    if (f === 0) R(22, 2, 1, 1, hex('#ff4a3a'));
+  }
+  return toCanvas(px);
+}
+
+/** The parachute a stalled rig comes down on, 20x12: striped canopy and its lines. */
+function buildChute(): HTMLCanvasElement {
+  const px = new Px(20, 12);
+  const a = hex('#f2a81d');
+  const b = hex('#f4f4f4');
+  const rows: [number, number][] = [[6, 13], [3, 16], [1, 18], [0, 19], [0, 19]];
+  rows.forEach(([x0, x1], y) => {
+    for (let x = x0; x <= x1; x++) {
+      if (y === 4 && x % 5 === 2) continue; // scalloped hem
+      const c = Math.floor((x + 2) / 4) % 2 ? a : b;
+      px.set(x, y, y === 0 ? shade(c, 0.25) : y >= 3 ? shade(c, -0.18) : c);
+    }
+  });
+  const line = hex('#cfd6e0');
+  for (let y = 5; y < 12; y++) {
+    const k = (y - 4) / 7;
+    px.set(Math.round(9 * k), y, line, 200);
+    px.set(Math.round(19 - 9 * k), y, line, 200);
+    if (y % 2) px.set(Math.round(6 + 3 * k), y, line, 130);
+    if (y % 2) px.set(Math.round(13 - 3 * k), y, line, 130);
+  }
+  return toCanvas(px);
+}
+
 // ---------------------------------------------------------------- buildings
 
 function snowCap(px: Px, x: number, y: number, w: number) {
@@ -917,6 +977,10 @@ export function makeTextures(scene: Phaser.Scene): void {
   tx.addCanvas('light', buildLight());
   tx.addCanvas('flare', buildFlare());
   tx.addCanvas('puff', buildPuff());
+  const lifter = tx.addCanvas('lifter', buildLifter())!;
+  lifter.add('l0', 0, 0, 0, LIFTER_W, LIFTER_H);
+  lifter.add('l1', 0, LIFTER_W, 0, LIFTER_W, LIFTER_H);
+  tx.addCanvas('chute', buildChute());
   const boulders = tx.addCanvas('boulders', buildBoulders())!;
   for (let l = 0; l < LAYERS.length; l++) boulders.add(`b${l}`, 0, l * TS, 0, TS, TS);
 }

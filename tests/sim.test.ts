@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { newPlayer, placeRig, statsOf, cargoCount, RIG_H } from '../src/sim/player';
-import { BURN, STEP, noInput, rigDepth, step, useItem, type Input, type SimEvent } from '../src/sim/rig';
-import { buildingAt, buyItem, buyUpgrade, refuel, repair, sellAll, tow } from '../src/sim/station';
+import { BURN, PHYS, STEP, fuelToSurface, noInput, rigDepth, step, useItem, type Input, type SimEvent } from '../src/sim/rig';
+import { buildingAt, buyItem, buyUpgrade, refuel, repair, respawn, sellAll } from '../src/sim/station';
 import { TEMP_POINTS, tempAtDepth } from '../src/sim/temperature';
 import { LAYERS, MINERALS, MINERAL_BASE, T, isMineral, isSolid } from '../src/sim/tiles';
 import { UPGRADES, UPGRADE_ORDER } from '../src/sim/upgrades';
@@ -9,6 +9,12 @@ import { DEPTH, SKY, WORLD_H, World } from '../src/sim/world';
 
 const W = 80;
 const world = () => new World(1234, W);
+/** A new miner without the starter Fuel Cell, for tests about an empty tank. */
+function bare(w: World) {
+  const p = newPlayer(w);
+  p.items.fuelcell = 0;
+  return p;
+}
 
 function run(w: World, p: ReturnType<typeof newPlayer>, input: Partial<Input>, seconds: number): SimEvent[] {
   const ev: SimEvent[] = [];
@@ -232,9 +238,10 @@ describe('rig', () => {
     expect(p.rig.fuel).toBeLessThan(fuel - BURN.thrust * 3);
   });
 
-  it('stalls underground with an empty tank, and a fuel cell gets it going', () => {
+  it('stalls underground with an empty tank while another miner is around, and a fuel cell gets it going', () => {
     const w = world();
-    const p = newPlayer(w);
+    w.rescue = true;
+    const p = bare(w);
     const x = openColumn(w);
     fill(w, x, x, SKY, SKY + 3, T.AIR);
     fill(w, x, x, SKY + 4, SKY + 4, T.ROCK);
@@ -247,6 +254,110 @@ describe('rig', () => {
     expect(useItem(p, w, 'fuelcell', [])).toBe(true);
     expect(p.rig.stalled).toBe(false);
     expect(p.rig.fuel).toBeCloseTo(statsOf(p).tank / 2);
+  });
+
+  it('a new rig carries one Fuel Cell', () => {
+    expect(newPlayer(world()).items.fuelcell).toBe(1);
+  });
+
+  it('an empty tank with nobody around wrecks the rig', () => {
+    const w = world();
+    const p = bare(w);
+    const x = openColumn(w);
+    fill(w, x, x, SKY, SKY + 3, T.AIR);
+    fill(w, x, x, SKY + 4, SKY + 4, T.ROCK);
+    placeRig(p.rig, x + 0.5, SKY + 4);
+    p.rig.fuel = 0.01;
+    const ev = run(w, p, { up: true }, 0.5);
+    expect(ev.some((e) => e.t === 'wrecked' && e.cause === 'fuel')).toBe(true);
+    expect(ev.some((e) => e.t === 'stalled')).toBe(false);
+    expect(p.rig.wrecked).toBe(true);
+    expect(p.rig.wreckedBy).toBe('fuel');
+  });
+
+  it('a dry tank on the surface is not a wreck: the rig can still crawl to the depot', () => {
+    const w = world();
+    const p = newPlayer(w);
+    p.rig.fuel = 0;
+    const x0 = p.rig.x;
+    run(w, p, { right: true }, 1);
+    expect(p.rig.wrecked).toBe(false);
+    expect(p.rig.x).toBeGreaterThan(x0 + 0.5);
+  });
+
+  it('burns a carried Fuel Cell by itself when the tank runs dry', () => {
+    const w = world();
+    const p = newPlayer(w);
+    const x = openColumn(w);
+    fill(w, x, x, SKY, SKY + 3, T.AIR);
+    fill(w, x, x, SKY + 4, SKY + 4, T.ROCK);
+    placeRig(p.rig, x + 0.5, SKY + 4);
+    p.rig.fuel = 0;
+    p.items.fuelcell = 2;
+    const ev = run(w, p, {}, 0.1);
+    expect(ev.filter((e) => e.t === 'reserve')).toEqual([{ t: 'reserve', left: 1 }]);
+    expect(p.items.fuelcell).toBe(1);
+    expect(p.rig.wrecked).toBe(false);
+    expect(p.rig.stalled).toBe(false);
+    expect(p.rig.fuel).toBeGreaterThan(statsOf(p).tank * 0.45);
+  });
+
+  it('a rig that stalls in the air comes down on a parachute, unhurt', () => {
+    const w = world();
+    w.rescue = true;
+    const p = bare(w);
+    const x = openColumn(w);
+    fill(w, x, x, SKY, SKY + 30, T.AIR);
+    fill(w, x, x, SKY + 31, SKY + 31, T.ROCK);
+    placeRig(p.rig, x + 0.5, SKY + 31);
+    p.rig.y = SKY + 3;
+    p.rig.grounded = false;
+    p.rig.fuel = 0;
+    const hull = p.rig.hull;
+    let fastest = 0;
+    for (let i = 0; i < 60 * 20 && !p.rig.grounded; i++) {
+      run(w, p, {}, STEP);
+      fastest = Math.max(fastest, p.rig.vy);
+    }
+    expect(p.rig.grounded).toBe(true);
+    expect(p.rig.stalled).toBe(true);
+    expect(fastest).toBeLessThanOrEqual(PHYS.chute + 0.001);
+    expect(p.rig.hull).toBe(hull);
+    expect(p.rig.wrecked).toBe(false);
+  });
+
+  it('a stalled rig is lost once the last other miner leaves', () => {
+    const w = world();
+    w.rescue = true;
+    const p = bare(w);
+    const x = openColumn(w);
+    fill(w, x, x, SKY, SKY + 3, T.AIR);
+    fill(w, x, x, SKY + 4, SKY + 4, T.ROCK);
+    placeRig(p.rig, x + 0.5, SKY + 4);
+    p.rig.fuel = 0;
+    run(w, p, {}, 0.2);
+    expect(p.rig.stalled).toBe(true);
+    w.rescue = false;
+    run(w, p, {}, 0.1);
+    expect(p.rig.wrecked).toBe(true);
+    expect(p.rig.wreckedBy).toBe('fuel');
+  });
+
+  it('estimates the fuel for the flight home a little on the safe side', () => {
+    const w = world();
+    const p = newPlayer(w);
+    const x = openColumn(w);
+    fill(w, x, x, SKY, SKY + 24, T.AIR);
+    fill(w, x, x, SKY + 25, SKY + 25, T.ROCK);
+    placeRig(p.rig, x + 0.5, SKY + 25);
+    const need = fuelToSurface(p, w);
+    const before = p.rig.fuel;
+    for (let i = 0; i < 4000 && rigDepth(p.rig) > 0; i++) run(w, p, { up: true }, STEP);
+    const used = before - p.rig.fuel;
+    expect(need).toBeGreaterThan(used);
+    expect(need).toBeLessThan(used * 1.6);
+    placeRig(p.rig, x + 0.5, SKY);
+    expect(fuelToSurface(p, w)).toBe(0);
   });
 
   it('a starting rig can reach the glacier and fly home on one tank', () => {
@@ -312,10 +423,10 @@ describe('station', () => {
     p.cash = 1000;
     expect(buyUpgrade(p, 'drill')).toBe('ok');
     expect(p.upgrades.drill).toBe(1);
-    expect(p.cash).toBe(500);
+    expect(p.cash).toBe(1000 - UPGRADES.drill.tiers[1].cost);
     expect(buyUpgrade(p, 'radiator')).toBe('cash');
     expect(buyItem(p, 'fuelcell')).toBe('ok');
-    expect(p.items.fuelcell).toBe(1);
+    expect(p.items.fuelcell).toBe(2);
   });
 
   it('only sells what you can afford when short on cash', () => {
@@ -328,20 +439,35 @@ describe('station', () => {
     expect(p.cash).toBe(0);
   });
 
-  it('a tow takes a fee and the cargo, and puts you back at the station', () => {
+  it('a respawn costs the ore on board and nothing else, and the rig comes back fuelled and repaired', () => {
     const w = world();
     const p = newPlayer(w);
     p.cash = 1000;
     p.cargo = { copper: 3 };
+    p.items.charge = 2;
+    p.upgrades.tank = 1;
     p.rig.y = SKY + 100;
     p.rig.wrecked = true;
+    p.rig.wreckedBy = 'fall';
     p.rig.hull = 0;
-    const fee = tow(p, w);
-    expect(fee).toBe(200);
-    expect(p.cash).toBe(800);
+    p.rig.fuel = 1;
+    expect(respawn(p, w)).toBe(3);
+    expect(p.cash).toBe(1000);
+    expect(p.items.charge).toBe(2);
+    expect(p.upgrades.tank).toBe(1);
     expect(cargoCount(p)).toBe(0);
     expect(p.rig.wrecked).toBe(false);
-    expect(p.rig.hull).toBeGreaterThan(0);
+    expect(p.rig.wreckedBy).toBeNull();
+    expect(p.rig.hull).toBe(statsOf(p).maxHull);
+    expect(p.rig.fuel).toBe(statsOf(p).tank);
+    expect(p.stats.deaths).toBe(1);
     expect(p.rig.y + RIG_H / 2).toBeCloseTo(SKY);
+  });
+
+  it('the first tier of every upgrade is within reach of an early trip or two', () => {
+    for (const key of UPGRADE_ORDER) {
+      if (key === 'radiator') continue; // not needed until the hot zones
+      expect(UPGRADES[key].tiers[1].cost).toBeLessThanOrEqual(400);
+    }
   });
 });

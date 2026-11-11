@@ -3,19 +3,19 @@ import '@fontsource/silkscreen/700.css';
 import './ui/style.css';
 import Phaser from 'phaser';
 import { Sfx } from './game/audio';
-import { GameScene, type SceneData } from './game/GameScene';
+import { GameScene, type Cue, type SceneData } from './game/GameScene';
 import { clearSave, hasSave, loadSession, prefs, saveSession } from './game/save';
 import { LocalSession, type GameSession, type SessionEvent } from './game/session';
 import { connect } from './net/connect';
 import { NetSession } from './net/netSession';
 import { PAINT_COUNT } from './net/protocol';
 import { ITEMS, ITEM_ORDER } from './sim/items';
-import { statsOf } from './sim/player';
-import { rigDepth, type Input } from './sim/rig';
+import { cargoCount, cargoValue, statsOf, type HurtCause } from './sim/player';
+import { fuelToSurface, rigDepth, type Input } from './sim/rig';
 import { MINERALS, T, tileDef } from './sim/tiles';
 import { blizzardAt, ventActive } from './sim/weather';
 import { UI, esc, layerForDepth, money, whyText, type TitleInfo } from './ui/ui';
-import { METERS_PER_TILE } from './sim/world';
+import { METERS_PER_TILE, SKY } from './sim/world';
 
 const sfx = new Sfx();
 const paintPref = () => {
@@ -56,6 +56,8 @@ const ui = new UI(sfx, {
     scene()?.setPaint(i);
   },
   setName: (n) => prefs.set('name', n),
+  float: (text, color) => scene()?.floatAtRig(text, color),
+  giveUp: () => die('fuel'),
 });
 
 function titleInfo(error?: string): TitleInfo {
@@ -73,7 +75,7 @@ const game = new Phaser.Game({
   banner: false,
 });
 const scene = () => game.scene.getScene('Game') as GameScene | null;
-game.scene.add('Game', GameScene, true, { session, onFrame } satisfies SceneData);
+game.scene.add('Game', GameScene, true, { session, onFrame, onCue } satisfies SceneData);
 session.on(onEvent);
 ui.bind(session);
 ui.showTitle(titleInfo());
@@ -85,16 +87,106 @@ function use(s: GameSession): void {
   session = s;
   s.on(onEvent);
   ui.bind(s);
-  scene()?.scene.restart({ session: s, onFrame } satisfies SceneData);
+  // Any cutscene belonged to the old session.
+  cine = false;
+  queued = null;
+  homeWarned = false;
+  ui.setBusy(false);
+  ui.hideDeath();
+  scene()?.scene.restart({ session: s, onFrame, onCue } satisfies SceneData);
 }
 
 function play(): void {
   sfx.unlock();
   ui.hideTitle();
   session.paused = false;
-  const r = session.player.rig;
-  if (r.wrecked) ui.showWrecked();
-  else if (r.stalled) ui.showStalled();
+  const p = session.player;
+  const r = p.rig;
+  const sp = session.world.spawn();
+  if (r.wrecked) {
+    // Left the game with a wrecked rig: start again from the station.
+    session.act({ a: 'respawn' });
+    arrive('respawn');
+  } else if (p.stats.dug === 0 && Math.abs(r.x - sp.x) < 0.01 && rigDepth(r) <= 0.01) {
+    arrive('new');
+  } else if (r.stalled) {
+    ui.showStalled();
+  }
+}
+
+// ------------------------------------------------------------ cutscenes
+
+/** A death or arrival scene is playing: the rig is out of the player's hands. */
+let cine = false;
+/** A scene to start on the next frame, once the game scene is showing this session. */
+let queued: (() => void) | null = null;
+
+/** The sky crane sets the rig down on the pad: at the start of a game, and after every death. */
+function arrive(kind: 'new' | 'respawn'): void {
+  const s = session;
+  cine = true;
+  ui.setBusy(true);
+  s.releaseInput();
+  s.paused = true;
+  if (kind === 'new') ui.showBanner('Rime Station', 'Boreal Combine dig site');
+  queued = () => {
+    scene()!.playArrival(() => {
+      if (session !== s) return;
+      cine = false;
+      ui.setBusy(false);
+      s.paused = false;
+      if (s instanceof LocalSession) saveSession(s);
+      if (kind === 'new') ui.toast('Depot: "Tank\'s full. Sell what you dig at the Assay Office, and watch that gauge."', '', 5000);
+      else ui.toast('A fresh rig on the pad: full tank, full hull.', 'good', 3200);
+    });
+  };
+}
+
+/** Play the rig's end, then put a new one on the pad. The ore on board is the only thing lost. */
+function die(cause: HurtCause): void {
+  if (cine) return;
+  const s = session;
+  const p = s.player;
+  cine = true;
+  ui.closePanel(false);
+  ui.closeChat();
+  ui.setBusy(true);
+  s.releaseInput();
+  s.paused = true;
+  ui.showDeath(cause, rigDepth(p.rig), cargoCount(p), cargoValue(p));
+  scene()!.playDeath(cause, () => {
+    if (session !== s) return;
+    s.act({ a: 'respawn' });
+    ui.hideDeath();
+    arrive('respawn');
+  });
+}
+
+function onCue(cue: Cue): void {
+  switch (cue) {
+    case 'sputter':
+      sfx.sputter();
+      break;
+    case 'freeze':
+      sfx.freeze();
+      break;
+    case 'crash':
+      sfx.boom();
+      sfx.thud(1);
+      break;
+    case 'boom':
+      sfx.boom();
+      break;
+    case 'hiss':
+      sfx.hiss();
+      break;
+    case 'rotor':
+      sfx.rotor();
+      break;
+    case 'land':
+      sfx.thud(0.4);
+      break;
+  }
 }
 
 async function join(o: { name?: string; paint: number; token?: string }): Promise<NetSession> {
@@ -154,11 +246,22 @@ let wasCold = false;
 let wasHot = false;
 let wasScald = false;
 let wasStorm = false;
+/** The "just enough fuel to get home" warning went out on this trip down. */
+let homeWarned = false;
 
-function onFrame(): void {
+function onFrame(game: GameScene): void {
   const r = session.player.rig;
   ui.frame();
-  const idle = ui.titleOpen || (session.paused && !session.online);
+  if (game.session === session && !ui.titleOpen) {
+    if (queued) {
+      const start = queued;
+      queued = null;
+      start();
+    } else if (r.wrecked && !cine) {
+      die(r.wreckedBy ?? 'fall');
+    }
+  }
+  const idle = ui.titleOpen || cine || (session.paused && !session.online);
   sfx.musicFrame(layerForDepth(rigDepth(r)), !ui.titleOpen);
   const tile = r.drill ? session.world.get(r.drill.tx, r.drill.ty) : 0;
   sfx.drill(!!r.drill && !idle, tileDef(tile).hardness);
@@ -170,6 +273,15 @@ function onFrame(): void {
   if (rigDepth(r) > 0.5 && r.fuel / st.tank < 0.15 && r.fuel > 0 && now - lastAlarm > 2500) {
     lastAlarm = now;
     sfx.alarm();
+  }
+  // One warning per trip, while there's still (just) enough in the tank to fly home.
+  const depth = rigDepth(r);
+  if (depth < 1) homeWarned = false;
+  else if (!homeWarned && depth > 6 && r.fuel < fuelToSurface(session.player, session.world) * 1.15 + 0.3) {
+    homeWarned = true;
+    sfx.alarm();
+    const cells = session.player.items.fuelcell ?? 0;
+    ui.toast(`Fuel check: just enough left to fly home. Head up now.${cells ? ` (${cells} Fuel Cell${cells > 1 ? 's' : ''} in reserve.)` : ''}`, 'warn', 4500);
   }
   if (r.cold && !wasCold) ui.toast(`Too cold for your heater (${st.minTemp}°C). The engine is burning extra fuel.`, 'warn', 3200);
   if (r.hot && !wasHot) ui.toast(`Overheating! Your radiator is rated to ${st.maxTemp}°C. The hull is taking damage.`, 'bad', 3200);
@@ -204,6 +316,16 @@ function hint(key: string, text: string): void {
   ui.toast(text, 'warn', 4200);
 }
 
+const LOST_TO: Record<HurtCause, string> = {
+  fuel: 'out of fuel',
+  fall: 'hard landing',
+  rock: 'rockfall',
+  gas: 'gas pocket',
+  magma: 'magma',
+  heat: 'overheated',
+  steam: 'steam vent',
+};
+
 function onEvent(e: SessionEvent): void {
   switch (e.t) {
     case 'pickup': {
@@ -235,6 +357,17 @@ function onEvent(e: SessionEvent): void {
     case 'blast':
       sfx.boom();
       break;
+    case 'peer-wrecked': {
+      if (near(e.x - 0.5, e.y - 0.5, 14)) {
+        if (e.cause === 'gas') sfx.boom();
+        else if (e.cause === 'fuel') sfx.freeze();
+        else if (e.cause === 'fall' || e.cause === 'rock') sfx.thud(0.9);
+        else sfx.hiss();
+      }
+      const depth = Math.max(0, Math.floor(e.y - SKY)) * METERS_PER_TILE;
+      ui.toast(`${esc(e.name)} lost a rig at ${depth} m: ${LOST_TO[e.cause]}.`, '', 2800);
+      break;
+    }
     case 'peer-blast': {
       const r = session.player.rig;
       if (Math.hypot(e.x - r.x, e.y - r.y) < 16) sfx.boom();
@@ -269,13 +402,14 @@ function onEvent(e: SessionEvent): void {
       sfx.buy();
       ui.toast(`Used ${ITEMS[e.item].name}`, '', 1400);
       break;
+    case 'reserve':
+      sfx.alarm();
+      ui.toast(`Tank ran dry: the rig burned a Fuel Cell. <b>${e.left} left.</b>`, 'warn', 3600);
+      break;
     case 'stalled':
+      // Only happens online with someone else around. The server sends the SOS.
       sfx.error();
       ui.showStalled();
-      break;
-    case 'wrecked':
-      sfx.boom();
-      setTimeout(() => ui.showWrecked(), 900);
       break;
     case 'refused':
       sfx.error();
@@ -283,11 +417,9 @@ function onEvent(e: SessionEvent): void {
       else ui.toast(`The station says no: ${whyText(e.res)}`, 'warn');
       break;
     case 'peer-sos':
-      if (e.mine) {
-        ui.toast('SOS sent. Hang tight: anyone with a Fuel Cell can refuel you.', 'warn', 3200);
-      } else {
+      if (!e.mine) {
         sfx.alarm();
-        ui.toast(`${esc(e.name)} is out of fuel at ${e.depth * METERS_PER_TILE} m. Bring a Fuel Cell and earn their tow fee (map: N).`, 'bad', 5000);
+        ui.toast(`${esc(e.name)} is out of fuel at ${e.depth * METERS_PER_TILE} m. Follow the red arrow with a Fuel Cell and earn a rescue fee.`, 'bad', 5000);
       }
       break;
     case 'rescue':
@@ -338,6 +470,10 @@ const KEYS: Record<string, keyof Input> = {
   KeyS: 'down',
 };
 
+/** Keys pressed for a panel or a cutscene. They don't drive the rig until they're let go. */
+const eaten = new Set<string>();
+const SKIP_KEYS = new Set(['Space', 'Enter', 'KeyE', 'Escape']);
+
 window.addEventListener('keydown', (e) => {
   sfx.unlock();
   if (e.code === 'KeyM' && !e.repeat && !ui.titleOpen && !ui.chatOpen) {
@@ -345,10 +481,21 @@ window.addEventListener('keydown', (e) => {
     ui.toast(sfx.muted ? 'Sound off' : 'Sound on', '', 1000);
     return;
   }
-  if (ui.handleKey(e)) return;
+  if (cine && !ui.titleOpen) {
+    eaten.add(e.code);
+    if (SKIP_KEYS.has(e.code)) {
+      if (!e.repeat) scene()?.skipCutscene();
+      e.preventDefault();
+    }
+    return;
+  }
+  if (ui.handleKey(e)) {
+    eaten.add(e.code);
+    return;
+  }
   const k = KEYS[e.code];
   if (k) {
-    session.input[k] = true;
+    if (!eaten.has(e.code)) session.input[k] = true;
     e.preventDefault();
     return;
   }
@@ -358,8 +505,13 @@ window.addEventListener('keydown', (e) => {
   if (digit) ui.useItem(ITEM_ORDER[Number(digit[1]) - 1]);
 });
 window.addEventListener('keyup', (e) => {
+  eaten.delete(e.code);
   const k = KEYS[e.code];
   if (k) session.input[k] = false;
+});
+// A tap or click skips a cutscene too.
+window.addEventListener('pointerdown', () => {
+  if (cine && !ui.titleOpen) scene()?.skipCutscene();
 });
 window.addEventListener('blur', () => session.releaseInput());
 document.addEventListener('visibilitychange', () => {
@@ -383,4 +535,11 @@ window.addEventListener('pagehide', () => {
   },
   blizzardAt,
   ventActive,
+  /** Skip the cutscene that's playing, if any (headless checks). */
+  skip() {
+    scene()?.skipCutscene();
+  },
+  get cutscene() {
+    return cine;
+  },
 };

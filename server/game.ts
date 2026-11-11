@@ -43,7 +43,7 @@ export class Client {
   lastInputAt = 0;
   chatAt = 0;
   meDirty = false;
-  /** Stalled and asking for help. Cleared once the rig has fuel again. */
+  /** Stalled, and everyone has been told. Cleared once the rig has fuel again. */
   sos = false;
   sosAt = -Infinity;
 
@@ -257,15 +257,17 @@ export class Game {
     this.broadcast({ t: 'rescue', by: c.id, byName: c.name, to: other.id, toName: other.name, fee: r.fee });
   }
 
-  /** Effects other players should see, like blasts. */
+  /** Effects other players should see, like blasts and a rig's end. */
   private shareEvent(c: Client, e: SimEvent): void {
-    if (e.t === 'blast' || e.t === 'flare') this.broadcast({ t: 'fx', e, by: c.id }, c);
+    if (e.t === 'blast' || e.t === 'flare' || e.t === 'wrecked') this.broadcast({ t: 'fx', e, by: c.id }, c);
   }
 
   tick(): void {
     this.tickNo++;
     const now = this.now();
     this.world.time = now / 1000;
+    // An empty tank only strands a rig while somebody else is around to bring fuel.
+    this.world.rescue = this.clients.size > 1;
     for (const c of this.clients) {
       const p = c.player!;
       c.budget = Math.min(c.budget + 1.05, MAX_BUDGET);
@@ -287,15 +289,22 @@ export class Game {
       }
       for (const e of ev) {
         this.shareEvent(c, e);
-        if (e.t === 'pickup') c.meDirty = true;
+        if (e.t === 'pickup' || e.t === 'reserve') c.meDirty = true;
       }
-      if (c.sos && !p.rig.stalled) c.sos = false;
+      // A stalled rig calls for help by itself. (The page can't be trusted to time it: its
+      // prediction stalls a few ticks before the rig does here.)
+      if (p.rig.stalled && !c.sos) this.sos(c);
+      else if (c.sos && !p.rig.stalled) c.sos = false;
     }
 
     const out = this.env.step([...this.clients].map((c) => c.player!), STEP);
     for (const e of out.fx) this.broadcast({ t: 'fx', e, by: '' });
     for (const [p, e] of out.personal) {
-      for (const c of this.clients) if (c.player === p) c.send({ t: 'ev', e: [e] });
+      for (const c of this.clients) {
+        if (c.player !== p) continue;
+        c.send({ t: 'ev', e: [e] });
+        if (e.t === 'wrecked') this.shareEvent(c, e);
+      }
     }
 
     const w = this.world;
@@ -313,7 +322,7 @@ export class Game {
     }
 
     if (this.tickNo % 3 === 0) {
-      for (const c of this.clients) c.send({ t: 'snap', ack: c.ack, rig: c.player!.rig, cargo: c.player!.cargo, stats: c.player!.stats });
+      for (const c of this.clients) c.send({ t: 'snap', ack: c.ack, rig: c.player!.rig, cargo: c.player!.cargo, items: c.player!.items, stats: c.player!.stats });
     }
     if (this.tickNo % 6 === 0) this.sendRigs();
     if (this.tickNo % 60 === 0) this.sendMap();

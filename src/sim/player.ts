@@ -11,6 +11,9 @@ export const RIG_H = 0.75;
 
 export type DrillDir = 'left' | 'right' | 'down';
 
+/** What damaged or finished off a rig. 'fuel' is an empty tank with nobody around to help. */
+export type HurtCause = 'fall' | 'gas' | 'magma' | 'heat' | 'rock' | 'steam' | 'fuel';
+
 export interface Drill {
   tx: number;
   ty: number;
@@ -35,9 +38,11 @@ export interface Rig {
   drill: Drill | null;
   fuel: number;
   hull: number;
-  /** Out of fuel underground. */
+  /** Out of fuel underground, waiting for another miner. In the air a parachute lets it down gently. */
   stalled: boolean;
   wrecked: boolean;
+  /** What wrecked it, for the death scene. */
+  wreckedBy: HurtCause | null;
   /** Below the heater's range: burns more fuel and digs slower. */
   cold: boolean;
   /** Above the radiator's range: the hull takes damage. */
@@ -53,6 +58,8 @@ export interface PlayerStats {
   dug: number;
   /** Stalled miners you refuelled. */
   rescues: number;
+  /** Rigs lost. */
+  deaths: number;
 }
 
 export interface Player {
@@ -115,11 +122,13 @@ export function newPlayer(world: World, name = 'Miner'): Player {
     items: newItems(),
     rig: {
       x: 0, y: 0, vx: 0, vy: 0, facing: 1, grounded: true, thrusting: false, drill: null,
-      fuel: 0, hull: 0, stalled: false, wrecked: false, cold: false, hot: false, scald: false,
+      fuel: 0, hull: 0, stalled: false, wrecked: false, wreckedBy: null, cold: false, hot: false, scald: false,
     },
-    stats: { deepest: 0, earned: 0, trips: 0, dug: 0, rescues: 0 },
+    stats: { deepest: 0, earned: 0, trips: 0, dug: 0, rescues: 0, deaths: 0 },
     seen: [],
   };
+  // One Fuel Cell to start with: it fires by itself the first time the tank runs dry.
+  p.items.fuelcell = 1;
   const s = statsOf(p);
   p.rig.fuel = s.tank;
   p.rig.hull = s.maxHull;

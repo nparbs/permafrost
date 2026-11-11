@@ -167,7 +167,7 @@ export class WorldMap {
     this.cv.className = 'map-cv';
     const key = this.box.appendChild(document.createElement('p'));
     key.className = 'note';
-    key.textContent = 'You are the blinking white square. Ore is not shown. Miners out of fuel blink red: park next to them and hand over a Fuel Cell to earn their tow fee.';
+    key.textContent = 'You are the blinking white square. Ore is not shown. Miners out of fuel blink red: park next to them and hand over a Fuel Cell to earn a rescue fee.';
     this.draw(true);
   }
 

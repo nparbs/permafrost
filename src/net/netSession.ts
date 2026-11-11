@@ -76,6 +76,7 @@ export class NetSession implements GameSession {
     this.count = w.online;
     this.clockSkew = (w.now ?? Date.now()) - Date.now();
     this.world.time = (Date.now() + this.clockSkew) / 1000;
+    this.world.rescue = this.count > 1;
     for (const p of w.peers) this.addPeer(p);
     conn.onMessage = (m) => this.onMessage(m);
     conn.onClose = (reason) => {
@@ -95,6 +96,7 @@ export class NetSession implements GameSession {
   update(dt: number): void {
     if (this.closed) return;
     this.world.time = (Date.now() + this.clockSkew) / 1000;
+    this.world.rescue = this.count > 1;
     this.acc = Math.min(this.acc + dt, 0.25);
     const ev: SimEvent[] = [];
     while (this.acc >= STEP) {
@@ -205,6 +207,13 @@ export class NetSession implements GameSession {
       }
       case 'fx':
         if (m.e.t === 'blast') this.emit([{ t: 'peer-blast', x: m.e.x, y: m.e.y, r: m.e.r }]);
+        else if (m.e.t === 'wrecked') {
+          // Someone's rig was lost. We can only show it if we know where they are.
+          const p = this.peerMap.get(m.by);
+          const d = this.dots.get(m.by);
+          if (p?.visible) this.emit([{ t: 'peer-wrecked', id: p.id, name: p.name, x: p.tx, y: p.ty, cause: m.e.cause }]);
+          else if (p && d) this.emit([{ t: 'peer-wrecked', id: p.id, name: p.name, x: d[1], y: d[2], cause: m.e.cause }]);
+        }
         else if (FX_PASS.has(m.e.t)) this.emit([m.e]);
         break;
       case 'ev':
@@ -247,12 +256,13 @@ export class NetSession implements GameSession {
     this.pending = [];
     Object.assign(r, m.rig);
     this.player.cargo = m.cargo;
+    this.player.items = m.items;
     this.player.stats = m.stats;
     const scratch: SimEvent[] = [];
     for (const [s, b] of this.unacked) this.stepLocal(s, b, scratch);
     this.offset.x = before.x - r.x;
     this.offset.y = before.y - r.y;
-    // Big jumps (a tow, a recall beacon) shouldn't glide across the map.
+    // Big jumps (a respawn, a recall beacon) shouldn't glide across the map.
     if (Math.hypot(this.offset.x, this.offset.y) > 3) this.offset.x = this.offset.y = 0;
   }
 
@@ -313,9 +323,10 @@ export class NetSession implements GameSession {
     return out;
   }
 
+  /** The server sends the SOS itself when a rig stalls, so stalled means sent. */
   get sosSent(): boolean {
     if (!this.player.rig.stalled) this.sosFor = false;
-    return this.sosFor;
+    return this.player.rig.stalled;
   }
 
   sos(): void {

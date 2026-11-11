@@ -2,7 +2,7 @@
 // and the server will run the same code to stay authoritative.
 
 import { ITEMS, type ItemKey } from './items';
-import { RIG_H, RIG_W, cargoCount, placeRig, statsOf, type DrillDir, type Player, type Rig } from './player';
+import { RIG_H, RIG_W, cargoCount, placeRig, statsOf, type DrillDir, type HurtCause, type Player, type Rig } from './player';
 import { MINERALS, T, isBlastable, isDiggable, isSolid, tileDef } from './tiles';
 import { BLIZZARD, STEAM, ambientTemp, blizzardAt, steamAt, windDir } from './weather';
 import { SKY, type World } from './world';
@@ -24,6 +24,8 @@ export const PHYS = {
   /** Seconds per unit of hardness with the stock drill. */
   digTime: 0.42,
   minDigTime: 0.1,
+  /** Fastest a stalled rig sinks under its parachute. Slow enough to land unhurt. */
+  chute: 3,
 };
 
 /** Fuel burn in litres per second. */
@@ -53,7 +55,7 @@ export interface Input {
 
 export const noInput = (): Input => ({ left: false, right: false, up: false, down: false });
 
-export type HurtCause = 'fall' | 'gas' | 'magma' | 'heat' | 'rock' | 'steam';
+export type { HurtCause };
 
 export type SimEvent =
   | { t: 'dig-start'; x: number; y: number; tile: number }
@@ -77,6 +79,8 @@ export type SimEvent =
   | { t: 'pour'; x: number; y: number }
   | { t: 'flare'; x: number; y: number }
   | { t: 'item'; item: ItemKey }
+  /** The tank ran dry and the rig burned a Fuel Cell by itself. `left` is how many remain. */
+  | { t: 'reserve'; left: number }
   | { t: 'stalled' }
   | { t: 'wrecked'; cause: HurtCause };
 
@@ -90,13 +94,31 @@ export function hurt(p: Player, amount: number, cause: HurtCause, ev: SimEvent[]
   if (r.wrecked || amount <= 0) return;
   r.hull = Math.max(0, r.hull - amount);
   if (announce) ev.push({ t: 'hurt', amount, cause });
-  if (r.hull <= 0) {
-    r.wrecked = true;
-    r.drill = null;
-    r.vx = 0;
-    r.vy = 0;
-    ev.push({ t: 'wrecked', cause });
-  }
+  if (r.hull <= 0) wreck(r, cause, ev);
+}
+
+function wreck(r: Rig, cause: HurtCause, ev: SimEvent[]): void {
+  r.wrecked = true;
+  r.wreckedBy = cause;
+  r.stalled = false;
+  r.thrusting = false;
+  r.drill = null;
+  r.vx = 0;
+  r.vy = 0;
+  ev.push({ t: 'wrecked', cause });
+}
+
+/**
+ * Roughly the fuel it takes to fly straight up to the surface from here, with a margin for
+ * the climb not being a straight line. The HUD marks it on the fuel gauge.
+ */
+export function fuelToSurface(p: Player, world: World): number {
+  const d = rigDepth(p.rig);
+  if (d <= 0) return 0;
+  const s = statsOf(p);
+  const cold = Math.max(0, s.minTemp - ambientTemp(world, d));
+  const seconds = d / (PHYS.maxUp * s.engine);
+  return seconds * (BURN.idle + BURN.move + BURN.thrust) * (1 + cold * HAZARD.coldBurn) * 1.2;
 }
 
 function overlapsSolid(world: World, x: number, y: number): { x0: number; x1: number; y0: number; y1: number; hit: boolean } {
@@ -279,13 +301,23 @@ export function step(p: Player, world: World, input: Input, dt: number, ev: SimE
     return;
   }
 
-  const hasFuel = r.fuel > 0;
-  if (!hasFuel && underground && !r.stalled) {
-    r.stalled = true;
-    ev.push({ t: 'stalled' });
-  } else if (hasFuel || !underground) {
-    r.stalled = false;
+  if (r.fuel <= 0 && underground) {
+    if ((p.items.fuelcell ?? 0) > 0) {
+      // A carried Fuel Cell is the reserve tank: it cuts in by itself.
+      p.items.fuelcell--;
+      r.fuel = s.tank * 0.5;
+      ev.push({ t: 'reserve', left: p.items.fuelcell });
+    } else if (!world.rescue) {
+      // Nobody out there to bring fuel: the cold takes the rig.
+      wreck(r, 'fuel', ev);
+      return;
+    } else if (!r.stalled) {
+      r.stalled = true;
+      ev.push({ t: 'stalled' });
+    }
   }
+  const hasFuel = r.fuel > 0;
+  if (hasFuel || !underground) r.stalled = false;
   // With an empty tank the rig can still crawl along the surface, but not underground.
   const power = hasFuel ? 1 : underground ? 0 : 0.35;
   const dir = (input.right ? 1 : 0) - (input.left ? 1 : 0);
@@ -333,7 +365,7 @@ export function step(p: Player, world: World, input: Input, dt: number, ev: SimE
     r.vy -= PHYS.thrust * eng * dt;
     r.vy = Math.max(r.vy, -PHYS.maxUp * eng);
   }
-  r.vy = Math.min(r.vy, PHYS.terminal);
+  r.vy = Math.min(r.vy, r.stalled ? PHYS.chute : PHYS.terminal);
 
   if (r.scald) r.vy -= STEAM.lift * dt;
   const above = !underground && r.y + RIG_H / 2 < SKY - 0.05;

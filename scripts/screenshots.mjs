@@ -51,6 +51,8 @@ if (want('desktop')) {
   const page = await open({ width: 1280, height: 720 });
   await shot(page, '01-title');
   await page.keyboard.press('Enter');
+  await page.waitForFunction(() => window.pf.cutscene, null, { timeout: 5000 }).catch(() => {});
+  await page.evaluate(() => window.pf.skip());
   await wait(page, 600);
   await shot(page, '02-surface');
   await hold(page, 'ArrowLeft', 900);
@@ -92,8 +94,8 @@ if (want('desktop')) {
     await page.keyboard.press('Escape');
   }
   await page.evaluate(() => { const r = window.pf.session.player.rig; r.y += 30; r.fuel = 0; });
-  await wait(page, 500);
-  await shot(page, '10-stalled');
+  await wait(page, 2200);
+  await shot(page, '10-out-of-fuel');
 }
 
 if (want('phone')) {
@@ -101,6 +103,8 @@ if (want('phone')) {
     const page = await open({ width: w, height: h }, { touch: true, dpr: 2 });
     await shot(page, `20-phone-${name}-title`);
     await page.evaluate(() => document.querySelector('.title .btn.primary').click());
+    await page.waitForFunction(() => window.pf.cutscene, null, { timeout: 5000 }).catch(() => {});
+    await page.evaluate(() => window.pf.skip());
     await wait(page, 600);
     await shot(page, `21-phone-${name}-surface`);
     await jump(page, 90, { cargo: { cryolite: 3 } });
@@ -120,6 +124,8 @@ if (want('dig')) {
   const page = await open({ width: 1280, height: 720 });
   page.on('dialog', (d) => d.accept());
   await page.getByText(/offline game|Play offline/).click();
+  await page.waitForFunction(() => window.pf.cutscene, null, { timeout: 5000 }).catch(() => {});
+  await page.evaluate(() => window.pf.skip());
   await wait(page, 500);
   for (const [d, name] of [[3, 'snow'], [70, 'glacier'], [180, 'permafrost'], [420, 'geothermal']]) {
     await page.evaluate((d) => {
@@ -156,6 +162,8 @@ if (want('living')) {
   const page = await open({ width: 1280, height: 720 });
   page.on('dialog', (d) => d.accept());
   await page.getByText(/offline game|Play offline/).click();
+  await page.waitForFunction(() => window.pf.cutscene, null, { timeout: 5000 }).catch(() => {});
+  await page.evaluate(() => window.pf.skip());
   await wait(page, 400);
   const carve = (d, extra) => page.evaluate(({ d, extra }) => {
     const s = window.pf.session;

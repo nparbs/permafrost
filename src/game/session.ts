@@ -4,7 +4,7 @@
 import { applyAction, type Action, type ActResult } from '../sim/actions';
 import { Environment } from '../sim/env';
 import type { ItemKey } from '../sim/items';
-import { newPlayer, type Player } from '../sim/player';
+import { newPlayer, type HurtCause, type Player } from '../sim/player';
 import { STEP, noInput, step, type Input, type SimEvent } from '../sim/rig';
 import { World } from '../sim/world';
 
@@ -15,6 +15,8 @@ export type SessionEvent =
   | { t: 'peer-dug'; x: number; y: number; tile: number }
   | { t: 'peer-blast'; x: number; y: number; r: number }
   | { t: 'chat'; id: string; name: string; text: string; mine: boolean }
+  /** Another miner's rig was lost at (x, y), in tiles. */
+  | { t: 'peer-wrecked'; id: string; name: string; x: number; y: number; cause: HurtCause }
   | { t: 'peer-join'; name: string }
   | { t: 'peer-leave'; name: string }
   | { t: 'refused'; act: Action; res: ActResult }
@@ -69,9 +71,9 @@ export interface GameSession {
   chat(text: string): void;
   /** Every other miner in the world, for the map. Empty offline. */
   mapPeers(): MapPeer[];
-  /** Ask everyone for fuel (online, while stalled). */
+  /** Ask everyone for fuel again (online, while stalled). The server sends the first SOS by itself. */
   sos(): void;
-  /** True once an SOS went out for the current stall. */
+  /** True while an SOS is out for this rig. */
   readonly sosSent: boolean;
   /** Hand a Fuel Cell to the stalled miner `id` (online). */
   aid(id: string): void;

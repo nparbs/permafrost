@@ -1035,3 +1035,146 @@ details.prices {
   image-rendering: pixelated;
   border: 1px solid var(--line);
 }
+
+/* ---------------------------------------------------------------- station keys, SOS arrow, cutscenes */
+
+.up.sel,
+.it.sel {
+  border-color: var(--ice);
+  box-shadow: 0 0 0 1px var(--ice);
+}
+#ui.touch-on :is(.up.sel, .it.sel) {
+  border-color: #1e3550;
+  box-shadow: none;
+}
+.note.keys {
+  text-align: center;
+}
+#ui.touch-on .note.keys {
+  display: none;
+}
+
+/* The fuel the flight home takes, marked on the fuel gauge. */
+.gauge u {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  display: none;
+  width: 2px;
+  margin-left: -1px;
+  background: #fff;
+  box-shadow: 0 0 0 1px #000;
+}
+
+.sos-arrow {
+  position: absolute;
+  top: 0;
+  left: 0;
+  display: none;
+  justify-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: #ff8a7a;
+  white-space: nowrap;
+  text-shadow: 1px 1px 0 #000, 0 0 6px #000;
+  animation: blink 0.9s steps(2) infinite;
+}
+.sos-arrow.show {
+  display: grid;
+}
+.sos-arrow i {
+  width: 0;
+  height: 0;
+  border: 11px solid transparent;
+  border-left: 20px solid #ff463c;
+  border-right: 0;
+  filter: drop-shadow(0 0 2px #000);
+}
+#ui.title-on .sos-arrow {
+  display: none;
+}
+
+/* Cutscenes: black bars slide in, the HUD steps aside. */
+.bars::before,
+.bars::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 11vh;
+  background: #02040a;
+  transition: transform 0.35s ease-out;
+}
+.bars::before {
+  top: 0;
+  transform: translateY(-100%);
+}
+.bars::after {
+  bottom: 0;
+  transform: translateY(100%);
+}
+#ui.cine .bars::before,
+#ui.cine .bars::after {
+  transform: none;
+}
+#ui :is(.hud-top, .items, .touch, .toasts) {
+  transition: opacity 0.25s;
+}
+#ui.cine :is(.hud-top, .items, .prompt, .touch, .toasts) {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.death {
+  position: absolute;
+  top: 17%;
+  left: 0;
+  right: 0;
+  display: none;
+  justify-items: center;
+  gap: 6px;
+  padding: 0 14px;
+  text-align: center;
+  text-shadow: 2px 2px 0 #000, 0 0 12px #000;
+}
+.death.show {
+  display: grid;
+  animation: death 0.5s ease-out;
+}
+.death b {
+  font-size: clamp(22px, 6vw, 40px);
+  font-weight: 700;
+  letter-spacing: 3px;
+  text-transform: uppercase;
+  color: #ff6a5a;
+}
+.death span {
+  font-size: clamp(11px, 1.8vw, 15px);
+  color: var(--text);
+}
+.death em {
+  margin-top: 4px;
+  font-size: clamp(10px, 1.6vw, 14px);
+  font-style: normal;
+  color: var(--ice);
+}
+.death small {
+  font-size: clamp(9px, 1.4vw, 12px);
+  color: var(--dim);
+}
+@keyframes death {
+  from {
+    opacity: 0;
+    transform: scale(1.15);
+  }
+}
+@media (max-height: 420px) {
+  .death {
+    top: 12vh;
+    gap: 3px;
+  }
+  .bars::before,
+  .bars::after {
+    height: 9vh;
+  }
+}
