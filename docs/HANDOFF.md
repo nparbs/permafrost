@@ -1,8 +1,10 @@
 # Handoff
 
-Last updated 2026-11-10 (v0.3.2 live: deaths cost only the ore, death and arrival scenes, Space at the station, cheaper early upgrades). Read ROADMAP.md for the plan and the decisions the user has made, and CLAUDE.md for the working rules.
+Last updated 2026-11-11 (v0.3.3 live: 5 of each item at most, Recall Beacon $2,500; v0.3.2 before it: deaths cost only the ore, death and arrival scenes, Space at the station, cheaper early upgrades). Read ROADMAP.md for the plan and the decisions the user has made, and CLAUDE.md for the working rules.
 
 ## Where things stand
+
+- **v0.3.3 is live** at https://permafrost.parbs.online (shipped 2026-11-11). It only changes two numbers in `src/sim/items.ts`: `ITEM_STACK` is 5 (was 9) and the Recall Beacon costs $2,500 (was $800). Saved rigs holding more than 5 of something keep them; `buyItem` just answers `max` until they're under the limit. No protocol change.
 
 - **v0.3.2 is live** at https://permafrost.parbs.online (shipped 2026-11-10, commit 2a3ba64; /health reports 0.3.2). See the v0.3.2 section of ROADMAP.md for what it does and the choices the user made. The details:
   - Rules: `step()` in `rig.ts` handles an empty tank underground: burn a Fuel Cell (`reserve` event), else wreck with cause `fuel` if `world.rescue` is false, else stall. `world.rescue` is "another miner is online": the server sets it each tick, `NetSession` sets it from the online count, and offline it stays false. A stalled rig's fall speed is capped at `PHYS.chute`. `respawn()` in `station.ts` replaced `tow()`; `rescueFee` replaced `towFee`. `Rig.wreckedBy` carries the cause.

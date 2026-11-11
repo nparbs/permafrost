@@ -429,6 +429,23 @@ describe('station', () => {
     expect(p.items.fuelcell).toBe(2);
   });
 
+  it('carries at most five of an item, and the Recall Beacon is the dear one', () => {
+    const w = world();
+    const p = newPlayer(w);
+    p.cash = 100000;
+    p.items.flare = 0;
+    for (let i = 0; i < 5; i++) expect(buyItem(p, 'flare')).toBe('ok');
+    expect(buyItem(p, 'flare')).toBe('max');
+    expect(p.items.flare).toBe(5);
+    const before = p.cash;
+    expect(buyItem(p, 'beacon')).toBe('ok');
+    expect(before - p.cash).toBe(2500);
+    // A rig that held more from before the limit keeps them.
+    p.items.charge = 8;
+    expect(buyItem(p, 'charge')).toBe('max');
+    expect(p.items.charge).toBe(8);
+  });
+
   it('only sells what you can afford when short on cash', () => {
     const w = world();
     const p = newPlayer(w);

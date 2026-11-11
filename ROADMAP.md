@@ -109,6 +109,11 @@ The early game was tough and deaths cost too much. Most deaths were a dry tank o
 - [ ] Not built: the sky crane isn't shown for other miners' arrivals; they just appear on the pad
 - [ ] Not decided: what refuelling another miner unlocks (the user wants it to unlock something). Rescues are already counted
 
+## v0.3.3: Supply limits (live since 2026-11-11) ✅
+
+- [x] A rig carries at most 5 of each item (was 9). A rig that already holds more keeps them but can't buy more until it's under 5
+- [x] The Recall Beacon costs $2,500 (was $800), so getting home with your ore for free is no longer the cheap option
+
 ## v0.4: Friendly rivalry
 
 - [ ] Live ore market: each sale pushes that ore's price down server-wide, and it recovers over time. The Assay Office shows the trend
