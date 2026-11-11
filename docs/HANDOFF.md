@@ -1,10 +1,10 @@
 # Handoff
 
-Last updated 2026-11-09 (v0.3.1 live: phone panel scrolling, minimap and map, meltwater as fuel, SOS rescues). Read ROADMAP.md for the plan and the decisions the user has made, and CLAUDE.md for the working rules.
+Last updated 2026-11-10 (v0.3.2 live: deaths cost only the ore, death and arrival scenes, Space at the station, cheaper early upgrades). Read ROADMAP.md for the plan and the decisions the user has made, and CLAUDE.md for the working rules.
 
 ## Where things stand
 
-- **v0.3.2 is built on the branch `v0.3.2-softer-landings`, not committed and not shipped** (2026-11-10). See the v0.3.2 section of ROADMAP.md for what it does and the choices the user made. The details:
+- **v0.3.2 is live** at https://permafrost.parbs.online (shipped 2026-11-10, commit 2a3ba64; /health reports 0.3.2). See the v0.3.2 section of ROADMAP.md for what it does and the choices the user made. The details:
   - Rules: `step()` in `rig.ts` handles an empty tank underground: burn a Fuel Cell (`reserve` event), else wreck with cause `fuel` if `world.rescue` is false, else stall. `world.rescue` is "another miner is online": the server sets it each tick, `NetSession` sets it from the online count, and offline it stays false. A stalled rig's fall speed is capped at `PHYS.chute`. `respawn()` in `station.ts` replaced `tow()`; `rescueFee` replaced `towFee`. `Rig.wreckedBy` carries the cause.
   - Online: snapshots now carry `items`, because the page predicts the Fuel Cell burn and a replay would otherwise burn a second one. The server sends the SOS itself when a rig stalls (the page's prediction stalls a few ticks early, so its own `sos` message used to be refused).
   - Cutscenes: `GameScene.playDeath`, `playArrival` and `skipCutscene`; `die()` and `arrive()` in `main.ts` run them. `main.ts` starts a death when it sees `rig.wrecked` in `onFrame`, not from the event, so a wreck the page didn't predict still plays. While one runs, `ui.busy` is on and the session is paused. The sky crane and parachute are in `textures.ts`, the sounds (`sputter`, `freeze`, `rotor`) in `audio.ts`.

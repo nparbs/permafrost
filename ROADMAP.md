@@ -90,7 +90,7 @@ The finale: plant charges on the Hearth's heat vents while it pulses freezing wa
 - [x] Fixes: an item the server refuses now says "Can't use a Flare right now" instead of "The station says no"
 - [x] `PROTOCOL_VERSION` is 3 (generation changed), so open pages are told to refresh when this ships
 
-## v0.3.2: Softer landings (built 2026-11-10, not shipped yet)
+## v0.3.2: Softer landings (live since 2026-11-10) ✅
 
 The early game was tough and deaths cost too much. Most deaths were a dry tank on the flight home, then a fall. The user's choices: a death costs the ore on board and nothing else, a carried Fuel Cell fires by itself, and SOS only exists while another miner is online.
 
