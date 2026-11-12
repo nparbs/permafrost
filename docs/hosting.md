@@ -80,6 +80,7 @@ A rebuild drops everyone's connection for a few seconds. The page reconnects by 
 ## Limits and notes
 
 - 6 connections per IP address, 60 players online at once (`MAX_ONLINE`), and a message rate limit per connection.
+- A season lasts 28 days (`SEASON_DAYS`). When it ends the server regenerates the map by itself and keeps the final leaderboards in the `seasons` table. `/health` reports the season and when it ends.
 - Chat is world-wide, 90 characters, one message a second. There's no filter or report button yet.
 - The server runs the game rules for every rig from its inputs, so cash, cargo and digging can't be edited from the browser.
 - The container is on Scrap Riot's Docker network, so it could reach Scrap Riot's database port. That database has a password, but a dedicated tunnel network would be tidier later.

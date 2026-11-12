@@ -3,14 +3,15 @@
 // it, then replay the inputs the server hasn't seen yet. Digs we predicted after input N are
 // put back first, so the replay digs them again at the same moments the server will.
 
-import type { GameSession, Listener, MapPeer, Peer, SessionEvent } from '../game/session';
+import type { BoardsInfo, GameSession, Listener, MapPeer, Peer, SessionEvent } from '../game/session';
+import { reviveMarket } from '../sim/market';
 import { applyAction, type Action, type ActResult } from '../sim/actions';
 import type { Player } from '../sim/player';
 import { revivePlayer } from '../sim/revive';
 import { STEP, noInput, step, type SimEvent } from '../sim/rig';
 import { T } from '../sim/tiles';
 import { World } from '../sim/world';
-import { decodeDiffs, packInput, unpackInput, type ClientMsg, type MapDot, type PeerInfo, type ServerMsg } from './protocol';
+import { decodeDiffs, packInput, unpackInput, type ClientMsg, type MapDot, type PeerInfo, type Recap, type ServerMsg } from './protocol';
 
 export interface Transport {
   send(m: ClientMsg): void;
@@ -61,6 +62,10 @@ export class NetSession implements GameSession {
   private sosFor = false;
   /** Server clock minus ours, in ms. */
   private clockSkew: number;
+  private seasonInfo: { n: number; ends: number } | null;
+  private boardsInfo: BoardsInfo | null = null;
+  private boardsAsked = 0;
+  readonly recap: Recap | null;
 
   constructor(
     private conn: Transport,
@@ -79,6 +84,9 @@ export class NetSession implements GameSession {
     // An older server doesn't say when day 1 began: then it starts now.
     this.world.dayStart = w.world.started != null ? w.world.started / 1000 : this.world.time;
     this.world.rescue = this.count > 1;
+    this.world.market = reviveMarket(w.world.market);
+    this.seasonInfo = w.world.ends != null ? { n: w.world.season, ends: w.world.ends } : null;
+    this.recap = w.recap ?? null;
     for (const p of w.peers) this.addPeer(p);
     conn.onMessage = (m) => this.onMessage(m);
     conn.onClose = (reason) => {
@@ -236,6 +244,18 @@ export class NetSession implements GameSession {
         this.emit([{ t: 'rescue', byName: m.byName, toName: m.toName, fee: m.fee, role }]);
         break;
       }
+      case 'market':
+        this.world.market = reviveMarket(m.m);
+        this.emit([{ t: 'market' }]);
+        break;
+      case 'find':
+        this.emit([{ t: 'find', name: m.name, mineral: m.mineral, first: m.first, depth: m.depth, mine: m.id === this.me.id }]);
+        break;
+      case 'boards':
+        this.boardsInfo = { now: m.now, ends: m.ends, last: m.last };
+        this.seasonInfo = { n: m.now.season, ends: m.ends };
+        this.emit([{ t: 'boards' }]);
+        break;
       case 'error':
         this.closed = true;
         this.emit([{ t: 'disconnected', reason: m.msg }]);
@@ -343,6 +363,22 @@ export class NetSession implements GameSession {
 
   myId(): string {
     return this.me.id;
+  }
+
+  season(): { n: number; ends: number } | null {
+    return this.seasonInfo;
+  }
+
+  boards(): BoardsInfo | null {
+    return this.boardsInfo;
+  }
+
+  askBoards(): void {
+    // The server answers at most once a second.
+    const now = Date.now();
+    if (this.closed || now - this.boardsAsked < 1100) return;
+    this.boardsAsked = now;
+    this.conn.send({ t: 'boards' });
   }
 
   chat(text: string): void {

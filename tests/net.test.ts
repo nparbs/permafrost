@@ -7,7 +7,12 @@ import { cargoCount, newPlayer, placeRig } from '../src/sim/player';
 import { AID_REACH, aid, rescueFee } from '../src/sim/station';
 import { World } from '../src/sim/world';
 import { STEP } from '../src/sim/rig';
-import { MINERAL_BASE, T } from '../src/sim/tiles';
+import { MINERALS, MINERAL_BASE, MINERAL_INDEX, T } from '../src/sim/tiles';
+import { BOUNTY_BONUS, MARKET, bountyOf, glutNow, marketFactor, priceOf, recordSale, trend, type Market } from '../src/sim/market';
+import { sellAll } from '../src/sim/station';
+
+const GOLD = MINERALS[MINERAL_INDEX.gold];
+const TIN = MINERALS[MINERAL_INDEX.tin];
 import { SKY } from '../src/sim/world';
 
 /** A server and any number of clients in one process, joined by links with a set delay. */
@@ -136,6 +141,7 @@ describe('server', () => {
     const lab = new Lab();
     const a = lab.join();
     a.client.player!.cargo = { gold: 2 };
+    const goldPrice = priceOf(lab.game.world, GOLD);
     lab.game.handle(a.client, { t: 'act', id: 1, act: { a: 'sell' } });
     lab.run([], 1);
     const res = a.received.find((m) => m.t === 'res' && m.id === 1);
@@ -144,8 +150,8 @@ describe('server', () => {
     placeRig(a.client.player!.rig, assay.x + 1.5, SKY);
     lab.game.handle(a.client, { t: 'act', id: 2, act: { a: 'sell' } });
     lab.run([], 1);
-    expect(a.received.find((m) => m.t === 'res' && m.id === 2)).toMatchObject({ res: { ok: true, total: 640 } });
-    expect(a.client.player!.cash).toBe(640);
+    expect(a.received.find((m) => m.t === 'res' && m.id === 2)).toMatchObject({ res: { ok: true, total: 2 * goldPrice } });
+    expect(a.client.player!.cash).toBe(2 * goldPrice);
   });
 
   it('ignores junk actions', () => {
@@ -617,5 +623,215 @@ describe('refuelling another miner', () => {
     t.target.rig.wrecked = true;
     expect(aid(t.helper, t.target)).toEqual({ ok: false, why: 'state' });
     expect(aid(t.helper, t.helper)).toEqual({ ok: false, why: 'state' });
+  });
+});
+
+describe('market and bounty', () => {
+  /** A time (in seconds) when the day's bounty for this seed isn't on tin or gold. */
+  function quietTime(seed: number): number {
+    for (let day = 0; ; day++) {
+      const k = bountyOf(seed, day * 86400 + 10).key;
+      if (k !== 'tin' && k !== 'gold') return day * 86400 + 10;
+    }
+  }
+
+  it('offline, ore sells at list price whatever was sold before', () => {
+    const w = new World(5, 80);
+    w.time = quietTime(5);
+    const p = newPlayer(w);
+    p.cargo = { tin: 30 };
+    expect(sellAll(p, w).total).toBe(30 * TIN.value);
+    p.cargo = { tin: 30 };
+    expect(sellAll(p, w).total).toBe(30 * TIN.value);
+  });
+
+  it('a sale pushes the price down, never below the floor, and it recovers', () => {
+    const w = new World(5, 80);
+    w.time = quietTime(5);
+    w.market = {};
+    const p = newPlayer(w);
+    p.cargo = { tin: 60 };
+    expect(sellAll(p, w).total).toBe(60 * TIN.value);
+    const after = priceOf(w, TIN);
+    expect(after).toBeLessThan(TIN.value);
+    expect(trend(w.market, TIN, w.time)).toBe(-1);
+    // Gold wasn't sold, so it hasn't moved.
+    expect(priceOf(w, GOLD)).toBe(GOLD.value);
+    recordSale(w.market, 'tin', 100000, w.time);
+    expect(marketFactor(w.market, TIN, w.time)).toBeCloseTo(MARKET.floor, 5);
+    // One half-life later the glut has halved, and the price is on its way back up.
+    const g = glutNow(w.market, 'tin', w.time);
+    w.time += MARKET.halfLife;
+    expect(glutNow(w.market, 'tin', w.time)).toBeCloseTo(g / 2, 5);
+    expect(trend(w.market, TIN, w.time)).toBe(1);
+    w.time += MARKET.halfLife * 40;
+    expect(priceOf(w, TIN)).toBe(TIN.value);
+    expect(trend(w.market, TIN, w.time)).toBe(0);
+  });
+
+  it('relics always pay in full', () => {
+    const w = new World(5, 80);
+    w.time = quietTime(5);
+    w.market = {};
+    const p = newPlayer(w);
+    const cache = MINERALS[MINERAL_INDEX.cache];
+    p.cargo = { cache: 3 };
+    sellAll(p, w);
+    expect(priceOf(w, cache)).toBe(cache.value);
+    expect(Object.keys(w.market)).toEqual([]);
+  });
+
+  it("the day's bounty ore pays extra, is the same all day, and is never a relic", () => {
+    const w = new World(77, 80);
+    const seen = new Set<string>();
+    for (let day = 0; day < 200; day++) {
+      w.time = day * 86400 + 5;
+      const b = bountyOf(w.seed, w.time);
+      seen.add(b.key);
+      expect(b.kind).not.toBe('relic');
+      expect(bountyOf(w.seed, w.time + 86000).key).toBe(b.key);
+      expect(priceOf(w, b)).toBe(Math.round(b.value * BOUNTY_BONUS));
+    }
+    expect(seen.size).toBeGreaterThan(6);
+  });
+
+  it("one miner's sale moves the price on everyone's screen, and it survives a restart", () => {
+    const lab = new Lab();
+    const a = lab.join();
+    const b = lab.join();
+    const assay = lab.game.world.station.find((x) => x.key === 'assay')!;
+    placeRig(a.client.player!.rig, assay.x + 1.5, SKY);
+    a.client.player!.cargo = { tin: 50 };
+    lab.run([a.session!, b.session!], 3);
+    const before = priceOf(lab.game.world, TIN);
+    expect(priceOf(b.session!.world, TIN)).toBe(before);
+    lab.game.handle(a.client, { t: 'act', id: 1, act: { a: 'sell' } });
+    lab.run([a.session!, b.session!], 5);
+    expect(a.client.player!.cash).toBe(50 * before);
+    const m = b.session!.world.market as Market;
+    expect(m.tin.g).toBeCloseTo(50, 3);
+    expect(marketFactor(m, TIN, m.tin.at)).toBeLessThan(1);
+    expect(marketFactor(a.session!.world.market, TIN, m.tin.at)).toBeCloseTo(marketFactor(m, TIN, m.tin.at), 6);
+    lab.game.save();
+    const again = new Game(lab.store, 'test', 80, 1234);
+    expect((again.world.market as Market).tin.g).toBeCloseTo(50, 3);
+  });
+});
+
+describe('finds and leaderboards', () => {
+  /** Put a mineral under the rig and drill it. */
+  function digUp(lab: Lab, who: ReturnType<Lab['join']>, key: string, x: number): void {
+    const w = lab.game.world;
+    const y = SKY + 20;
+    w.set(x, y, T.AIR);
+    w.set(x, y + 1, MINERAL_BASE + MINERAL_INDEX[key]);
+    w.set(x, y + 2, T.ICE);
+    placeRig(who.client.player!.rig, x + 0.5, y + 1);
+    who.session!.input.down = true;
+    lab.run([who.session!], 60 * 6);
+    who.session!.input.down = false;
+  }
+
+  it("tells everyone about the season's first of each mineral, and about every relic", () => {
+    const lab = new Lab();
+    const a = lab.join({ hello: { name: 'Ada' } });
+    const b = lab.join({ hello: { name: 'Bo' } });
+    const heard: string[] = [];
+    b.session!.on((e) => {
+      if (e.t === 'find') heard.push(`${e.name}:${e.mineral}:${e.first}:${e.mine}`);
+    });
+    lab.run([a.session!, b.session!], 5);
+    digUp(lab, a, 'tin', 12);
+    digUp(lab, a, 'tin', 14);
+    digUp(lab, a, 'cache', 16);
+    digUp(lab, a, 'cache', 18);
+    lab.run([a.session!, b.session!], 10);
+    expect(heard).toEqual(['Ada:tin:true:false', 'Ada:cache:true:false', 'Ada:cache:false:false']);
+    expect(a.client.player!.stats.relics).toBe(2);
+  });
+
+  it('ranks miners by depth, earnings, relics and rescues, including those offline', () => {
+    const lab = new Lab();
+    const a = lab.join({ hello: { name: 'Ada' } });
+    const b = lab.join({ hello: { name: 'Bo' } });
+    const c = lab.join({ hello: { name: 'Cy' } });
+    Object.assign(a.client.player!.stats, { deepest: 120, earned: 500, relics: 1 });
+    Object.assign(b.client.player!.stats, { deepest: 300, earned: 200, rescues: 2 });
+    Object.assign(c.client.player!.stats, { deepest: 40 });
+    // Cy goes home: the saved rig still counts.
+    lab.game.drop(c.client);
+    digUp(lab, a, 'tin', 12);
+    lab.game.handle(a.client, { t: 'boards' });
+    lab.run([a.session!, b.session!], 3);
+    const info = a.session!.boards()!;
+    expect(info.now.season).toBe(1);
+    expect(info.now.miners).toBe(3);
+    expect(info.now.boards.deepest.map((r) => r.name)).toEqual(['Bo', 'Ada', 'Cy']);
+    expect(info.now.boards.earned.map((r) => [r.name, r.v])).toEqual([['Ada', 500], ['Bo', 200]]);
+    expect(info.now.boards.relics.map((r) => r.name)).toEqual(['Ada']);
+    expect(info.now.boards.rescues.map((r) => r.name)).toEqual(['Bo']);
+    expect(info.now.firsts.map((f) => `${f.name}:${f.mineral}`)).toEqual(['Ada:tin']);
+    expect(info.last).toBeNull();
+    expect(a.session!.season()).toEqual({ n: 1, ends: info.ends });
+  });
+});
+
+describe('seasons', () => {
+  it('rolls over to a new map, keeps the final boards, and starts everyone again', () => {
+    const lab = new Lab();
+    // Put the clock one second before the end of the season.
+    const base = Date.now() + lab.game.seasonMs - 1000;
+    lab.game.now = () => base + (lab.tick * 1000) / 60;
+    lab.game.nextSeed = () => 4321;
+    const a = lab.join({ hello: { name: 'Ada' } });
+    const b = lab.join({ hello: { name: 'Bo' } });
+    const tokenA = a.session!.token;
+    Object.assign(a.client.player!.stats, { deepest: 200, earned: 900 });
+    Object.assign(b.client.player!.stats, { deepest: 350, earned: 100 });
+    a.client.player!.cash = 5000;
+    a.client.player!.upgrades.drill = 2;
+    lab.game.world.set(10, SKY + 3, T.AIR);
+    recordSale(lab.game.world.market!, 'tin', 80, lab.game.world.time);
+    lab.run([a.session!, b.session!], 30);
+    expect(lab.game.season).toBe(1);
+    const gone: string[] = [];
+    a.session!.on((e) => {
+      if (e.t === 'disconnected') gone.push(e.reason);
+    });
+    lab.run([a.session!, b.session!], 120);
+
+    expect(lab.game.season).toBe(2);
+    expect(lab.game.world.seed).toBe(4321);
+    expect(lab.game.world.diffs.size).toBe(0);
+    expect(lab.game.world.market).toEqual({});
+    expect(lab.game.online).toBe(0);
+    expect(gone).toEqual(['Season 1 is over. A new map is ready.']);
+    expect(a.closed()).toBe('season');
+
+    // Ada comes back: a new rig, and a summary of the season she played.
+    const a2 = lab.join({ hello: { token: tokenA } });
+    expect(a2.session!.world.seed).toBe(4321);
+    expect(a2.client.player!.cash).toBe(0);
+    expect(a2.client.player!.upgrades.drill).toBe(0);
+    expect(a2.client.player!.stats.deepest).toBe(0);
+    const recap = a2.session!.recap!;
+    expect(recap.record.season).toBe(1);
+    expect(recap.record.boards.deepest.map((r) => r.name)).toEqual(['Bo', 'Ada']);
+    expect(recap.you.deepest).toEqual({ v: 200, rank: 2 });
+    expect(recap.you.earned).toEqual({ v: 900, rank: 1 });
+    expect(recap.you.relics).toEqual({ v: 0, rank: 0 });
+    expect(a2.session!.season()!.n).toBe(2);
+    expect(a2.session!.season()!.ends).toBeGreaterThan(lab.game.now() + lab.game.seasonMs - 5000);
+
+    // The old boards stay on show, and the summary isn't repeated once she has a rig this season.
+    lab.game.handle(a2.client, { t: 'boards' });
+    lab.run([a2.session!], 3);
+    expect(a2.session!.boards()!.last!.boards.earned[0]).toMatchObject({ name: 'Ada', v: 900 });
+    expect(a2.session!.boards()!.now.boards.deepest).toEqual([]);
+    lab.game.drop(a2.client);
+    const a3 = lab.join({ hello: { token: tokenA } });
+    expect(a3.session!.recap).toBeNull();
+    // A newcomer gets no summary either.
+    expect(lab.join().session!.recap).toBeNull();
   });
 });

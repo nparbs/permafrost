@@ -2,6 +2,7 @@
 // Generation is per tile and order-free, so a server can build it in chunks later.
 
 import { fbm, hash3, valueNoise } from './rng';
+import type { Market } from './market';
 import { LAYERS, L, MINERALS, MINERAL_BASE, T, type Mineral } from './tiles';
 
 /** Rows of sky above the ground. Row SKY is the surface row. */
@@ -71,6 +72,8 @@ export class World {
   dayStart = 0;
   /** True while another miner is online who could bring fuel. Then an empty tank stalls the rig; otherwise it's the end of the rig. */
   rescue = false;
+  /** The live ore market (see market.ts). Null offline, where ore always sells at list price. */
+  market: Market | null = null;
   /** layerTop[x * LAYERS.length + i] = depth where layer i starts in column x. */
   private readonly layerTop: Int16Array;
   private readonly padCols = new Set<number>();

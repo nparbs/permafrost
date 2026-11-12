@@ -3,7 +3,8 @@
 
 import { ITEMS, ITEM_STACK, type ItemKey } from './items';
 import { RIG_H, cargoCount, placeRig, statsOf, type Player } from './player';
-import { MINERALS } from './tiles';
+import { onMarket, priceOf, recordSale } from './market';
+import { MINERALS, MINERAL_INDEX } from './tiles';
 import { UPGRADES, type UpgradeKey } from './upgrades';
 import { SKY, type Building, type World } from './world';
 
@@ -30,23 +31,28 @@ export interface SaleLine {
   total: number;
 }
 
-export function saleLines(p: Player): SaleLine[] {
+/** The cargo at today's prices (see market.ts). */
+export function saleLines(p: Player, world: World): SaleLine[] {
   const lines: SaleLine[] = [];
   for (const m of MINERALS) {
     const count = p.cargo[m.key] ?? 0;
-    if (count > 0) lines.push({ key: m.key, name: m.name, count, each: m.value, total: count * m.value });
+    if (count <= 0) continue;
+    const each = priceOf(world, m);
+    lines.push({ key: m.key, name: m.name, count, each, total: count * each });
   }
   return lines;
 }
 
-export function sellAll(p: Player): { lines: SaleLine[]; total: number } {
-  const lines = saleLines(p);
+/** Sell the whole cargo at the price each ore has right now. Online, the sale then pushes those prices down. */
+export function sellAll(p: Player, world: World): { lines: SaleLine[]; total: number } {
+  const lines = saleLines(p, world);
   const total = lines.reduce((s, l) => s + l.total, 0);
   if (total > 0) {
     p.cash += total;
     p.stats.earned += total;
     p.stats.trips++;
     p.cargo = {};
+    if (world.market) for (const l of lines) if (onMarket(MINERALS[MINERAL_INDEX[l.key]])) recordSale(world.market, l.key, l.count, world.time);
   }
   return { lines, total };
 }

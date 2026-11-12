@@ -64,7 +64,7 @@ export function applyAction(p: Player, world: World, act: Action, ev: SimEvent[]
   if (need && buildingAt(world, p)?.key !== need) return { ok: false, why: 'where' };
   switch (act.a) {
     case 'sell': {
-      const r = sellAll(p);
+      const r = sellAll(p, world);
       return r.total > 0 ? { ok: true, total: r.total } : { ok: false, why: 'state' };
     }
     case 'refuel': {

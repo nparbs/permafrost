@@ -250,6 +250,7 @@ function finishDrill(p: Player, world: World, ev: SimEvent[]): void {
       const key = MINERALS[m].key;
       p.cargo[key] = (p.cargo[key] ?? 0) + 1;
       if (!p.seen.includes(key)) p.seen.push(key);
+      if (MINERALS[m].kind === 'relic') p.stats.relics++;
       ev.push({ t: 'pickup', mineral: m });
     } else {
       ev.push({ t: 'cargo-full', mineral: m });

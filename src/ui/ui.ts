@@ -2,6 +2,8 @@
 
 import type { Sfx } from '../game/audio';
 import type { GameSession } from '../game/session';
+import { BOARD_KEYS, type BoardKey, type Recap, type Standings } from '../net/protocol';
+import { BOUNTY_BONUS, MARKET, bountyLeft, bountyOf, marketFactor, priceOf, trend } from '../sim/market';
 import { quality, type Quality } from '../game/gfx';
 import { PAINTS } from '../game/textures';
 import { CHAT_MAX, NAME_MAX, PAINT_COUNT, RIG_SOS, RIG_STALLED, RIG_WRECKED, cleanName } from '../net/protocol';
@@ -22,6 +24,15 @@ declare const __APP_VERSION__: string;
 
 export const money = (n: number) => '$' + Math.floor(n).toLocaleString('en-US');
 export const meters = (tiles: number) => `${Math.max(0, Math.floor(tiles)) * METERS_PER_TILE} m`;
+/** "12 days", "5 hours", "under an hour" for a span in ms. */
+export function timeLeft(ms: number): string {
+  const h = ms / 3_600_000;
+  if (h >= 48) return `${Math.floor(h / 24)} days`;
+  if (h >= 24) return '1 day';
+  if (h >= 2) return `${Math.floor(h)} hours`;
+  if (h >= 1) return '1 hour';
+  return 'under an hour';
+}
 export const prettyCode = (t: string) => t.replace(/(.{4})(?=.)/g, '$1-');
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls = '', html = ''): HTMLElementTagNameMap[K] {
@@ -64,6 +75,14 @@ const WHY: Record<string, string> = {
   bad: 'Something went wrong.',
 };
 export const whyText = (r: ActResult) => WHY[r.why ?? 'bad'] ?? WHY.bad;
+
+/** The leaderboards: a title and how to print a score. */
+const BOARDS: Record<BoardKey, { title: string; show: (v: number) => string }> = {
+  deepest: { title: 'Deepest dig', show: (v) => meters(v) },
+  earned: { title: 'Most earned', show: (v) => money(v) },
+  relics: { title: 'Relics found', show: (v) => String(v) },
+  rescues: { title: 'Rescues', show: (v) => String(v) },
+};
 
 /** The key hint on the button Space presses. Hidden on touch screens along with every other <kbd>. */
 const SPACE = '<kbd>Space</kbd> ';
@@ -179,6 +198,10 @@ export class UI {
   private nav: ((dx: number, dy: number) => void) | null = null;
   /** The highlighted card in the Machine Shop or Supply Store. */
   private sel = 0;
+  /** The Assay Office price list is unfolded. */
+  private pricesOpen = false;
+  /** Which page of the Standings panel is showing. */
+  private boardTab: 'now' | 'firsts' | 'last' = 'now';
   /** Marks the fuel for the flight home on the fuel gauge. */
   private homeMark: HTMLElement;
   private sosArrow: HTMLElement;
@@ -346,7 +369,7 @@ export class UI {
         'div',
         'help',
         `<p><kbd>←</kbd><kbd>→</kbd> drive and drill sideways · <kbd>↓</kbd> drill down · <kbd>↑</kbd> or <kbd>Space</kbd> thrust</p>
-         <p><kbd>E</kbd> enter a building, <kbd>Space</kbd> to sell or buy there · <kbd>1</kbd>–<kbd>6</kbd> items · <kbd>N</kbd> map · <kbd>T</kbd> chat · <kbd>M</kbd> mute · <kbd>Esc</kbd> menu</p>`,
+         <p><kbd>E</kbd> enter a building, <kbd>Space</kbd> to sell or buy there · <kbd>1</kbd>–<kbd>6</kbd> items · <kbd>N</kbd> map · <kbd>L</kbd> standings · <kbd>T</kbd> chat · <kbd>M</kbd> mute · <kbd>Esc</kbd> menu</p>`,
       ),
     );
     box.appendChild(
@@ -615,6 +638,100 @@ export class UI {
     });
   }
 
+  /** Redraw the panel if it's this kind: something it shows just changed. */
+  refreshIf(kind: string): void {
+    if (this.panelKind === kind) this.rerender();
+  }
+
+  /** The season's leaderboards (online only). */
+  openBoards(): void {
+    if (this.titleOpen || this.busy || !this.s.online) return;
+    this.sfx.click();
+    this.boardTab = 'now';
+    this.s.askBoards();
+    this.openPanel('Standings', () => this.boardsPanel(), true, 'boards');
+  }
+
+  /** One leaderboard as a table, with your own row marked. */
+  private boardTable(st: Standings, key: BoardKey, mine?: { v: number; rank: number }): HTMLElement {
+    const b = BOARDS[key];
+    const box = el('div', 'board');
+    box.appendChild(el('h3', '', b.title));
+    const rows = st.boards[key] ?? [];
+    const me = this.s.myId();
+    if (!rows.length) box.appendChild(el('p', 'note', 'Nobody yet.'));
+    else {
+      const tbl = box.appendChild(el('table', 'sale rank'));
+      rows.forEach((r, i) => tbl.appendChild(el('tr', r.id === me ? 'me' : '', `<td>${i + 1}</td><td>${esc(r.name)}</td><td>${b.show(r.v)}</td>`)));
+    }
+    if (mine && mine.v > 0 && !rows.some((r) => r.id === me)) box.appendChild(el('p', 'note', `You: ${b.show(mine.v)}${mine.rank ? ` · #${mine.rank}` : ''}`));
+    return box;
+  }
+
+  private boardsPanel(): HTMLElement {
+    const box = el('div', 'pnl');
+    const info = this.s.boards();
+    const se = this.s.season();
+    if (!info || !se) {
+      box.appendChild(el('p', 'empty-note', 'Radioing the station for the standings…'));
+      return box;
+    }
+    const left = se.ends - this.s.world.time * 1000;
+    box.appendChild(el('p', '', `<b>Season ${se.n}</b> · ${left > 0 ? `${timeLeft(left)} left` : 'ending now'} · ${info.now.miners} ${info.now.miners === 1 ? 'miner' : 'miners'}`));
+    const tabs = box.appendChild(el('div', 'row tabs'));
+    const tab = (key: typeof this.boardTab, label: string) =>
+      tabs.appendChild(button(label, () => {
+        this.boardTab = key;
+        this.sfx.click();
+        this.rerender();
+        this.panelBody.scrollTop = 0;
+      }, this.boardTab === key ? 'primary' : ''));
+    tab('now', 'Boards');
+    tab('firsts', 'First finds');
+    if (info.last) tab('last', `Season ${info.last.season}`);
+    if (this.boardTab === 'last' && !info.last) this.boardTab = 'now';
+
+    if (this.boardTab === 'firsts') {
+      const tbl = box.appendChild(el('table', 'sale'));
+      const seen = this.s.player.seen;
+      for (const m of MINERALS) {
+        const f = info.now.firsts.find((x) => x.mineral === m.key);
+        // A mineral you haven't dug up yourself stays unnamed, even when somebody else has found it.
+        const known = seen.includes(m.key);
+        const name = `<td><i class="sw" style="background:${known ? m.color : '#333'}"></i>${known ? m.name : '???'}</td>`;
+        tbl.appendChild(el('tr', f ? (f.id === this.s.myId() ? 'me' : '') : 'unknown', f ? `${name}<td>${meters(f.depth)}</td><td>${esc(f.name)}</td>` : `${name}<td></td><td>nobody yet</td>`));
+      }
+      box.appendChild(el('p', 'note', 'The first miner to dig up each mineral this season. Everyone on the ice hears about it.'));
+    } else {
+      const st = this.boardTab === 'last' ? info.last! : info.now;
+      const stats = this.s.player.stats;
+      const grid = box.appendChild(el('div', 'boards'));
+      for (const k of BOARD_KEYS) grid.appendChild(this.boardTable(st, k, this.boardTab === 'now' ? { v: Math.floor(stats[k] ?? 0), rank: 0 } : undefined));
+      box.appendChild(
+        el('p', 'note', this.boardTab === 'last' ? `How season ${info.last!.season} ended.` : 'When the season ends, the map is regenerated and rigs, cash and upgrades start over. The final boards are kept.'),
+      );
+    }
+    this.confirm = () => this.closePanel();
+    return box;
+  }
+
+  /** Shown once after a season rolls over, to a miner who played the one that ended. */
+  showRecap(recap: Recap): void {
+    const rec = recap.record;
+    this.openPanel(`Season ${rec.season} is over`, () => {
+      const box = el('div', 'pnl');
+      box.appendChild(el('p', '', `Mechanic: "New ice, same pay. Everyone starts over." The map has been regenerated, and rigs, cash and upgrades were reset with it.`));
+      const yours = BOARD_KEYS.filter((k) => recap.you[k].v > 0).map((k) => `${BOARDS[k].title}: <b>${BOARDS[k].show(recap.you[k].v)}</b>${recap.you[k].rank ? ` (#${recap.you[k].rank})` : ''}`);
+      if (yours.length) box.appendChild(el('p', 'recap-you', `Your season ${rec.season}: ${yours.join(' · ')}`));
+      const grid = box.appendChild(el('div', 'boards'));
+      for (const k of BOARD_KEYS) grid.appendChild(this.boardTable(rec, k));
+      const go = () => this.closePanel();
+      box.appendChild(button(`${SPACE}Start season ${rec.season + 1}`, go, 'primary wide'));
+      this.confirm = go;
+      return box;
+    }, true, 'recap');
+  }
+
   /** Close the panel if it's this kind. */
   closeIf(kind: string): void {
     if (this.panelKind === kind) this.closePanel();
@@ -671,7 +788,7 @@ export class UI {
     if (this.busy || this.chatOpen) return true;
     if (this.render) {
       const arrow = NAV_KEYS[e.code];
-      if (e.code === 'Escape' || (e.code === 'KeyE' && this.closable) || (e.code === 'KeyN' && this.panelKind === 'map')) {
+      if (e.code === 'Escape' || (e.code === 'KeyE' && this.closable) || (e.code === 'KeyN' && this.panelKind === 'map') || (e.code === 'KeyL' && this.panelKind === 'boards')) {
         if (this.closable) this.closePanel();
         e.preventDefault();
       } else if (e.code === 'Space' || e.code === 'Enter') {
@@ -690,6 +807,10 @@ export class UI {
     }
     if (e.code === 'KeyN') {
       this.openMap();
+      return true;
+    }
+    if (e.code === 'KeyL' && this.s.online) {
+      this.openBoards();
       return true;
     }
     if ((e.code === 'KeyT' || e.code === 'Slash') && this.s.online) {
@@ -792,29 +913,55 @@ export class UI {
     return box;
   }
 
+  /** How an ore's price stands against its list price, as a small tag: "▼ 82%", "▲ 91%", "Bounty +50%". */
+  private priceTag(m: (typeof MINERALS)[number]): string {
+    const w = this.s.world;
+    const tags: string[] = [];
+    if (bountyOf(w.seed, w.time).key === m.key) tags.push(`<span class="tag bounty">Bounty +${Math.round((BOUNTY_BONUS - 1) * 100)}%</span>`);
+    const f = marketFactor(w.market, m, w.time);
+    if (f <= 0.995) {
+      const t = trend(w.market, m, w.time);
+      tags.push(`<span class="tag ${t < 0 ? 'down' : 'up'}">${t < 0 ? '▼' : '▲'} ${Math.round(f * 100)}%</span>`);
+    }
+    return tags.join(' ');
+  }
+
   private assayPanel(): HTMLElement {
     const p = this.s.player;
+    const w = this.s.world;
     const box = el('div', 'pnl');
-    const lines = saleLines(p);
+    const lines = saleLines(p, w);
     this.confirm = () => this.closePanel();
+    const bounty = bountyOf(w.seed, w.time);
+    const hours = Math.max(1, Math.ceil(bountyLeft(w.time) / 3600));
+    const what = p.seen.includes(bounty.key) ? `<i class="sw" style="background:${bounty.color}"></i><b>${bounty.name}</b>` : "<b>???</b> (something you haven't dug up yet)";
+    box.appendChild(el('p', 'bounty-line', `Today's bounty: ${what} pays ${Math.round((BOUNTY_BONUS - 1) * 100)}% extra · ${hours} h left`));
     if (!lines.length) {
       box.appendChild(el('p', 'empty-note', 'Your cargo bay is empty. Bring up ore and we will weigh it.'));
     } else {
       const tbl = box.appendChild(el('table', 'sale'));
       for (const l of lines) {
         const m = MINERALS.find((mm) => mm.key === l.key)!;
-        tbl.appendChild(el('tr', '', `<td><i class="sw" style="background:${m.color}"></i>${l.name}</td><td>${l.count} × ${money(l.each)}</td><td>${money(l.total)}</td>`));
+        tbl.appendChild(el('tr', '', `<td><i class="sw" style="background:${m.color}"></i>${l.name} ${this.priceTag(m)}</td><td>${l.count} × ${money(l.each)}</td><td>${money(l.total)}</td>`));
       }
       const sell = () => this.run({ a: 'sell' }, (r) => this.finish(`+${money(r.total ?? 0)}`, FLOAT.cash));
-      box.appendChild(button(`${SPACE}Sell everything · ${money(cargoValue(p))}`, sell, 'primary wide'));
+      box.appendChild(button(`${SPACE}Sell everything · ${money(cargoValue(p, w))}`, sell, 'primary wide'));
       this.confirm = sell;
     }
     const list = el('details', 'prices');
-    list.appendChild(el('summary', '', 'Price list'));
+    // Keep the list open across redraws (prices move while you look at them).
+    list.open = this.pricesOpen;
+    list.addEventListener('toggle', () => (this.pricesOpen = list.open));
+    list.appendChild(el('summary', '', w.market ? 'Price list and market' : 'Price list'));
     const tbl = list.appendChild(el('table', 'sale'));
     for (const m of MINERALS) {
       const seen = p.seen.includes(m.key);
-      tbl.appendChild(el('tr', seen ? '' : 'unknown', `<td><i class="sw" style="background:${seen ? m.color : '#333'}"></i>${seen ? m.name : '???'}</td><td></td><td>${seen ? money(m.value) : '?'}</td>`));
+      tbl.appendChild(el('tr', seen ? '' : 'unknown', `<td><i class="sw" style="background:${seen ? m.color : '#333'}"></i>${seen ? m.name : '???'}</td><td>${seen ? this.priceTag(m) : ''}</td><td>${seen ? money(priceOf(w, m)) : '?'}</td>`));
+    }
+    if (w.market) {
+      list.appendChild(
+        el('p', 'note', `Prices are shared. Every sale pushes that ore's price down for everyone, to ${Math.round(MARKET.floor * 100)}% of list at worst, and it climbs back by half every ${Math.round(MARKET.halfLife / 60)} minutes. Relics always pay in full.`),
+      );
     }
     box.appendChild(list);
     box.appendChild(this.cashLine());
@@ -977,6 +1124,7 @@ export class UI {
       this.confirm = () => this.closePanel();
       box.appendChild(button(`${SPACE}Resume`, () => this.closePanel(), 'primary wide'));
       box.appendChild(button('Map', () => this.openMap(), 'wide'));
+      if (this.s.online) box.appendChild(button('Standings', () => this.openBoards(), 'wide'));
       box.appendChild(button(this.sfx.muted ? 'Sound: off' : 'Sound: on', () => {
         this.sfx.setMuted(!this.sfx.muted);
         this.rerender();

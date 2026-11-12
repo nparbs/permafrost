@@ -3,7 +3,8 @@ import { newPlayer, placeRig, statsOf, cargoCount, RIG_H } from '../src/sim/play
 import { BURN, PHYS, STEP, fuelToSurface, noInput, rigDepth, step, useItem, type Input, type SimEvent } from '../src/sim/rig';
 import { buildingAt, buyItem, buyUpgrade, refuel, repair, respawn, sellAll } from '../src/sim/station';
 import { TEMP_POINTS, tempAtDepth } from '../src/sim/temperature';
-import { LAYERS, MINERALS, MINERAL_BASE, T, isMineral, isSolid } from '../src/sim/tiles';
+import { priceOf } from '../src/sim/market';
+import { LAYERS, MINERALS, MINERAL_BASE, MINERAL_INDEX, T, isMineral, isSolid } from '../src/sim/tiles';
 import { UPGRADES, UPGRADE_ORDER } from '../src/sim/upgrades';
 import { DEPTH, SKY, WORLD_H, World } from '../src/sim/world';
 
@@ -408,8 +409,8 @@ describe('station', () => {
     const w = world();
     const p = newPlayer(w);
     p.cargo = { tin: 4, gold: 1 };
-    const sale = sellAll(p);
-    expect(sale.total).toBe(4 * 15 + 320);
+    const sale = sellAll(p, w);
+    expect(sale.total).toBe(4 * priceOf(w, MINERALS[MINERAL_INDEX.tin]) + priceOf(w, MINERALS[MINERAL_INDEX.gold]));
     expect(p.cash).toBe(sale.total);
     expect(cargoCount(p)).toBe(0);
 

@@ -1189,3 +1189,82 @@ details.prices {
     height: 9vh;
   }
 }
+
+/* ---- v0.4: market tags, bounty, standings ---- */
+.tag {
+  display: inline-block;
+  padding: 0 4px;
+  font-size: 9px;
+  border-radius: 3px;
+  border: 1px solid currentColor;
+  white-space: nowrap;
+}
+.tag.down {
+  color: var(--bad);
+}
+.tag.up {
+  color: var(--good);
+}
+.tag.bounty {
+  color: var(--gold);
+}
+.bounty-line {
+  padding: 6px 8px;
+  font-size: 11px;
+  color: var(--text);
+  background: rgba(255, 211, 106, 0.08);
+  border: 1px solid rgba(255, 211, 106, 0.35);
+  border-radius: 4px;
+}
+.bounty-line b {
+  color: var(--gold);
+  font-weight: 400;
+}
+details.prices .note {
+  margin-top: 6px;
+}
+.tabs .btn {
+  padding: 6px 8px;
+  font-size: 11px;
+}
+.boards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 8px;
+}
+.board {
+  padding: 8px;
+  background: #0d1a2c;
+  border: 1px solid #1e3550;
+  border-radius: 4px;
+}
+.board h3 {
+  margin: 0 0 4px;
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--ice);
+  letter-spacing: 1px;
+}
+.board .note {
+  margin-top: 4px;
+}
+table.rank td:first-child {
+  width: 18px;
+  color: var(--dim);
+}
+table.rank td:nth-child(2) {
+  text-align: left;
+  color: var(--text);
+}
+table.sale tr.me td {
+  color: var(--good);
+  background: rgba(92, 255, 176, 0.07);
+}
+.recap-you {
+  font-size: 11px;
+  color: var(--dim);
+}
+.recap-you b {
+  color: var(--gold);
+  font-weight: 400;
+}

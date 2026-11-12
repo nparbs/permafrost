@@ -2,17 +2,20 @@
 // tiles, cash and cargo, and tells each player what they need to see.
 
 import {
-  PAINT_COUNT, PROTOCOL_VERSION, RIG_SOS, RIG_STALLED, RIG_THRUST, RIG_WRECKED, RigMode, cleanChat, cleanName, encodeDiffs, unpackInput,
-  type ClientMsg, type MapDot, type PeerInfo, type RigView, type ServerMsg,
+  BOARD_KEYS, PAINT_COUNT, PROTOCOL_VERSION, RIG_SOS, RIG_STALLED, RIG_THRUST, RIG_WRECKED, RigMode, cleanChat, cleanName, encodeDiffs, unpackInput,
+  type BoardKey, type ClientMsg, type First, type MapDot, type PeerInfo, type Recap, type RigView, type SeasonRecord, type ServerMsg,
 } from '../src/net/protocol';
 import { applyAction, isAction } from '../src/sim/actions';
 import { Environment } from '../src/sim/env';
+import { pruneMarket, reviveMarket } from '../src/sim/market';
 import { newPlayer, type Player, type Rig } from '../src/sim/player';
 import { revivePlayer } from '../src/sim/revive';
 import { STEP, noInput, rigDepth, step, type SimEvent } from '../src/sim/rig';
 import { aid } from '../src/sim/station';
+import { MINERALS, MINERAL_INDEX } from '../src/sim/tiles';
 import { World } from '../src/sim/world';
-import type { Store } from './db';
+import { allRanks, standings, type Entry } from './boards';
+import type { Store, WorldRow } from './db';
 
 export const PUBLIC_WIDTH = 240;
 /** How far away (in tiles) other rigs are sent to you. */
@@ -24,6 +27,21 @@ const MAX_QUEUE = 90;
 const MAX_BUDGET = 20;
 const IDLE_AFTER_MS = 300;
 const SAVE_EVERY_MS = 30_000;
+/** A season lasts four weeks unless the server is told otherwise. */
+export const SEASON_MS = 28 * 86_400_000;
+/** The leaderboards are worked out at most this often. */
+const BOARDS_EVERY_MS = 3000;
+
+/** What's kept about a finished season: the final boards, and every miner's numbers and ranks in BOARD_KEYS order. */
+interface SeasonFile {
+  record: SeasonRecord;
+  ranks: Record<string, { v: number; rank: number }[]>;
+}
+
+function reviveFirsts(raw: unknown): First[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.filter((f): f is First => !!f && typeof f.mineral === 'string' && Object.hasOwn(MINERAL_INDEX, f.mineral) && typeof f.id === 'string' && typeof f.name === 'string' && typeof f.depth === 'number' && typeof f.at === 'number');
+}
 
 export interface Sock {
   send(data: string): void;
@@ -46,6 +64,7 @@ export class Client {
   /** Stalled, and everyone has been told. Cleared once the rig has fuel again. */
   sos = false;
   sosAt = -Infinity;
+  boardsAt = -Infinity;
 
   constructor(
     readonly sock: Sock,
@@ -68,10 +87,21 @@ export class Client {
 const clampPaint = (v: unknown) => (typeof v === 'number' && Number.isInteger(v) && v >= 0 && v < PAINT_COUNT ? v : 0);
 
 export class Game {
-  readonly world: World;
-  readonly season: number;
+  world!: World;
+  season!: number;
+  /** When this season began, in ms. */
+  private started!: number;
+  /** The first miner to dig up each mineral this season. */
+  private firsts: First[] = [];
+  /** The market or the firsts changed since the last save. */
+  private extraDirty = false;
+  private boardsMsg: { at: number; msg: Extract<ServerMsg, { t: 'boards' }> } | null = null;
+  /** The season before this one, read once. Undefined until it's been looked up. */
+  private lastSeason: SeasonFile | null | undefined;
+  /** Picks the seed of the next season's map. */
+  nextSeed: () => number = () => (Math.random() * 2 ** 31) | 0;
   /** Milliseconds the world has had somebody online, up to the last time it emptied. Days run on this. */
-  private played: number;
+  private played!: number;
   /** When the world last went from empty to occupied, or null while it's empty. */
   private occupiedAt: number | null = null;
   private clients = new Set<Client>();
@@ -79,7 +109,7 @@ export class Game {
   private tickNo = 0;
   private worldDirty = false;
   private lastSave = Date.now();
-  private env: Environment;
+  private env!: Environment;
   now: () => number = Date.now;
 
   constructor(
@@ -87,16 +117,35 @@ export class Game {
     readonly worldId = 'public',
     width = PUBLIC_WIDTH,
     seed = (Math.random() * 2 ** 31) | 0,
+    readonly seasonMs = SEASON_MS,
   ) {
-    const row = store.world(worldId) ?? store.createWorld(worldId, seed, width);
+    this.open(store.world(worldId) ?? store.createWorld(worldId, seed, width));
+  }
+
+  /** Load a world as stored: at start-up, and again when a new season begins. */
+  private open(row: WorldRow): void {
+    this.env?.detach();
     this.world = new World(row.seed, row.width);
     this.world.applyDiffs(row.diffs);
     this.world.dirty.length = 0;
     this.season = row.season;
+    this.started = row.started;
     this.world.time = this.now() / 1000;
     this.played = row.played;
     this.world.dayStart = (this.now() - this.played) / 1000;
+    const extra = (row.extra && typeof row.extra === 'object' ? row.extra : {}) as { market?: unknown; firsts?: unknown };
+    this.world.market = reviveMarket(extra.market);
+    this.firsts = reviveFirsts(extra.firsts);
+    this.extraDirty = false;
+    this.worldDirty = false;
+    this.boardsMsg = null;
+    this.lastSeason = undefined;
     this.env = new Environment(this.world);
+  }
+
+  /** When this season ends, in ms. */
+  get ends(): number {
+    return this.started + this.seasonMs;
   }
 
   /** Milliseconds of days gone by. The clock only runs while somebody is online. */
@@ -132,6 +181,9 @@ export class Game {
         break;
       case 'aid':
         this.aid(c, m.id);
+        break;
+      case 'boards':
+        this.boards(c);
         break;
       default:
         break;
@@ -174,6 +226,7 @@ export class Game {
     c.id = acc.id;
     c.name = acc.name;
     c.paint = acc.paint;
+    const recap = this.recapFor(acc.id);
     const saved = this.store.loadPlayer(acc.id, this.worldId, this.season);
     const p = saved ? revivePlayer(this.world, saved) : newPlayer(this.world, c.name);
     p.name = c.name;
@@ -192,11 +245,12 @@ export class Game {
       v: PROTOCOL_VERSION,
       token,
       you: c.info(),
-      world: { id: this.worldId, seed: this.world.seed, width: this.world.w, season: this.season, started: this.now() - this.dayClock(), diffs: encodeDiffs(this.world.diffs) },
+      world: { id: this.worldId, seed: this.world.seed, width: this.world.w, season: this.season, started: this.now() - this.dayClock(), ends: this.ends, market: this.world.market ?? {}, diffs: encodeDiffs(this.world.diffs) },
       player: p,
       peers,
       online: this.clients.size,
       now: this.now(),
+      ...(recap ? { recap } : {}),
     });
     this.broadcast({ t: 'peer', p: c.info() }, c);
   }
@@ -227,6 +281,86 @@ export class Game {
     c.send({ t: 'me', player: p });
     c.meDirty = false;
     if (res.ok) this.savePlayer(c);
+    if (res.ok && m.act.a === 'sell') {
+      // The sale moved prices for everyone.
+      this.extraDirty = true;
+      this.broadcast({ t: 'market', m: this.world.market ?? {} });
+    }
+  }
+
+  /** A miner picked something up: note the season's first of each mineral, and tell everyone about firsts and big finds. */
+  private found(c: Client, mineral: number): void {
+    const m = MINERALS[mineral];
+    if (!m) return;
+    const depth = Math.max(0, Math.floor(rigDepth(c.player!.rig)));
+    const first = !this.firsts.some((f) => f.mineral === m.key);
+    if (first) {
+      this.firsts.push({ mineral: m.key, id: c.id, name: c.name, depth, at: this.now() });
+      this.extraDirty = true;
+      this.boardsMsg = null;
+    }
+    if (first || m.kind === 'relic' || m.key === 'heartshard') this.broadcast({ t: 'find', id: c.id, name: c.name, mineral: m.key, first, depth });
+  }
+
+  /** Everyone with a rig this season, with the numbers of those online taken live. */
+  private entries(): Entry[] {
+    const all = new Map<string, Entry>();
+    for (const r of this.store.seasonPlayers(this.worldId, this.season)) {
+      const stats = (r.state && typeof r.state === 'object' ? (r.state as { stats?: Entry['stats'] }).stats : undefined) ?? {};
+      all.set(r.id, { id: r.id, name: r.name, stats });
+    }
+    for (const c of this.clients) all.set(c.id, { id: c.id, name: c.name, stats: c.player!.stats });
+    return [...all.values()];
+  }
+
+  private lastFile(): SeasonFile | null {
+    if (this.lastSeason === undefined) {
+      const f = this.store.seasonRecord(this.worldId, this.season - 1) as SeasonFile | null;
+      this.lastSeason = f && f.record && f.ranks ? f : null;
+    }
+    return this.lastSeason;
+  }
+
+  /** The season summary for a miner whose last rig here was in the season that just ended. */
+  private recapFor(account: string): Recap | null {
+    if (this.store.playerSeason(account, this.worldId) !== this.season - 1) return null;
+    const ranks = this.lastFile()?.ranks[account];
+    if (!ranks) return null;
+    const you = {} as Record<BoardKey, { v: number; rank: number }>;
+    BOARD_KEYS.forEach((k, i) => (you[k] = ranks[i] ?? { v: 0, rank: 0 }));
+    return { record: this.lastFile()!.record, you };
+  }
+
+  private boards(c: Client): void {
+    const now = this.now();
+    if (now - c.boardsAt < 1000) return;
+    c.boardsAt = now;
+    if (!this.boardsMsg || now - this.boardsMsg.at > BOARDS_EVERY_MS) {
+      this.boardsMsg = { at: now, msg: { t: 'boards', now: standings(this.season, this.entries(), this.firsts), ends: this.ends, last: this.lastFile()?.record ?? null } };
+    }
+    c.send(this.boardsMsg.msg);
+  }
+
+  /**
+   * The season is over: keep the final boards, send everyone back to the title for a moment, and
+   * open a new map. Players' saved rigs carry the old season number, so they all start over.
+   */
+  private rollover(): void {
+    const ended = this.now();
+    this.save();
+    const entries = this.entries();
+    const record: SeasonRecord = { ...standings(this.season, entries, this.firsts), ended };
+    this.store.saveSeason(this.worldId, this.season, ended, { record, ranks: allRanks(entries) } satisfies SeasonFile);
+    const msg = `Season ${this.season} is over. A new map is ready.`;
+    for (const c of [...this.clients]) {
+      c.send({ t: 'error', code: 'season', msg });
+      this.drop(c);
+      c.sock.close(4003, 'season');
+    }
+    this.occupiedAt = null;
+    this.store.rollWorld(this.worldId, this.nextSeed(), this.season + 1, ended);
+    this.open(this.store.world(this.worldId)!);
+    console.log(`Season ${this.season} of ${this.worldId} began with seed ${this.world.seed}`);
   }
 
   private chat(c: Client, text: unknown): void {
@@ -281,6 +415,7 @@ export class Game {
   tick(): void {
     this.tickNo++;
     const now = this.now();
+    if (this.tickNo % 60 === 0 && now >= this.ends) this.rollover();
     this.world.time = now / 1000;
     // An empty tank only strands a rig while somebody else is around to bring fuel.
     this.world.rescue = this.clients.size > 1;
@@ -306,6 +441,7 @@ export class Game {
       for (const e of ev) {
         this.shareEvent(c, e);
         if (e.t === 'pickup' || e.t === 'reserve') c.meDirty = true;
+        if (e.t === 'pickup') this.found(c, e.mineral);
       }
       // A stalled rig calls for help by itself. (The page can't be trusted to time it: its
       // prediction stalls a few ticks before the rig does here.)
@@ -419,6 +555,11 @@ export class Game {
     if (this.worldDirty) {
       this.store.saveWorld(this.worldId, this.world.diffs);
       this.worldDirty = false;
+    }
+    if (this.extraDirty) {
+      if (this.world.market) pruneMarket(this.world.market, this.world.time);
+      this.store.saveExtra(this.worldId, { market: this.world.market, firsts: this.firsts });
+      this.extraDirty = false;
     }
     for (const c of this.clients) this.savePlayer(c);
   }

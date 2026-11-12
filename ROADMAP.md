@@ -24,7 +24,7 @@ Each milestone below should be playable start to finish before the next one star
 
 - **Two-sided temperature.** The rig only works inside a temperature range. The glacier's core (about -78°C) is the first wall, so you need a heater. The geothermal zone and the Hollow (up to 360°C) are the second, so you need a radiator. Too cold burns extra fuel and slows the drill. Too hot damages the hull.
 - **A shared, changing world.** Everyone digs the same map. Tunnels near the surface slowly refreeze (v0.3), so the map never turns to Swiss cheese and shallow ore comes back.
-- **A live market.** Ore prices drop as players sell the same thing and recover over time (v0.4).
+- **A live market.** Ore prices drop as players sell the same thing and recover over time, and the Combine puts a bounty on one ore each day (v0.4).
 - **The mystery.** Why is a planet with a molten core frozen solid?
 
 ## Story outline (v0.5)
@@ -139,16 +139,20 @@ Day and night, in both settings:
 - [x] It's looks only: temperature, fuel and the dark underground are the same by day and by night
 - [ ] Not decided: whether night should do anything (colder surface, pricier fuel, better aurora-lit finds)
 
-## v0.4: Friendly rivalry
+## v0.4: Friendly rivalry (built 2026-11-11 on branch `v0.4`, not shipped yet)
 
-- [ ] Live ore market: each sale pushes that ore's price down server-wide, and it recovers over time. The Assay Office shows the trend
-- [ ] Daily bounties: the Combine pays extra for one ore today
-- [ ] Server-wide announcements for big finds such as relics and Heartshards, plus a "first to find it" board for the season
+- [x] Live ore market (online only): every unit sold adds to that ore's glut, which pushes its price down for everyone, to 45% of list at worst. The glut halves every 20 minutes. Common ores take more to flood than rare ones, and relics always pay in full. The Assay Office tags each price: "▼ 71%" just after a sale, "▲ 87%" while it climbs back (`src/sim/market.ts`). Offline, ore sells at list price
+- [x] Daily bounty: the Combine pays 50% extra for one ore or gem each day, online and offline. It changes at midnight UTC and comes from the seed and the date, so nothing is sent. The Assay Office shows it, and the assayer announces it. An ore you haven't dug up yet shows as "???"
+- [x] Server-wide announcements: everyone hears about the season's first find of each mineral, and about every relic and Heartshard. A mineral you haven't dug up yourself is called "something new", so the deep finds stay a mystery
+- [x] A "first to find it" board for the season (Standings → First finds)
 - [x] SOS: a stalled miner sends a beacon, and anyone who brings fuel earns the tow fee (done early, in v0.3.1)
-- [ ] Towing a stalled miner with a cable, for the rescue fee (see the tow cable idea below)
-- [ ] Trading ore between players at the station
-- [ ] Leaderboards for the season: deepest, most earned, relics found, rescues and fastest Hearth
-- [ ] Seasons (4 weeks by default): the map regenerates, and rigs, cash and upgrades reset. Cosmetics, titles, prestige stars and history stay. There's a season summary screen
+- [x] Leaderboards for the season: deepest, most earned, relics found and rescues, top 10 each, with your own row marked. Press L, or Menu → Standings. Miners who are offline count too. "Fastest Hearth" waits for the Hearth (v0.5)
+- [x] Seasons (4 weeks; `SEASON_DAYS` on the server changes it): when the season ends the server keeps the final boards, picks a new seed, and regenerates the map. Rigs, cash, upgrades, the market and the day count start over. Anyone online is flown in to the new map within a few seconds. A miner who played the season that ended gets a summary screen once: the final boards, and their own numbers and ranks. Standings keeps a tab for the season before. A warning shows on joining in the last 3 days. The live season 1 ends on 2026-12-07
+- [x] `PROTOCOL_VERSION` is 5 (welcome carries the market and the season's end; new `market`, `find` and `boards` messages). `PlayerStats.relics` counts relics dug up. `npm run seasoncheck` runs a one-minute season in headless Chrome
+- [ ] Not built: towing a stalled miner with a cable, for the rescue fee (see the tow cable idea below)
+- [ ] Not built: trading ore between players at the station
+- [ ] Not built: only the last season's boards can be looked at. Older ones are kept in the database (`seasons` table) but have no screen. Nothing cosmetic is carried over yet, because cosmetics, titles and prestige stars don't exist until v0.5 and v0.7
+- [ ] Not decided: the market's numbers (45% floor, 20-minute half-life), the size of the bounty, and whether the bounty should only pick ores the season's miners can reach
 
 ## v0.5: The Halvorsen story and the Hearth
 

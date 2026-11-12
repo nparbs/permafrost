@@ -6,7 +6,7 @@ import path from 'node:path';
 import { WebSocketServer } from 'ws';
 import type { ClientMsg } from '../src/net/protocol';
 import { Store } from './db';
-import { Client, Game } from './game';
+import { Client, Game, PUBLIC_WIDTH } from './game';
 
 declare const __APP_VERSION__: string;
 
@@ -19,7 +19,8 @@ const MAX_PER_IP = 6;
 const MAX_ONLINE = Number(process.env.MAX_ONLINE ?? 60);
 
 const store = new Store(DB_FILE);
-const game = new Game(store);
+const SEASON_DAYS = Number(process.env.SEASON_DAYS) > 0 ? Number(process.env.SEASON_DAYS) : 28;
+const game = new Game(store, 'public', PUBLIC_WIDTH, undefined, SEASON_DAYS * 86_400_000);
 
 const MIME: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',
@@ -63,7 +64,7 @@ function serveStatic(req: http.IncomingMessage, res: http.ServerResponse): void 
 const server = http.createServer((req, res) => {
   if (req.url === '/health') {
     res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' });
-    res.end(JSON.stringify({ ok: true, version: __APP_VERSION__, online: game.online, season: game.season }));
+    res.end(JSON.stringify({ ok: true, version: __APP_VERSION__, online: game.online, season: game.season, seasonEnds: new Date(game.ends).toISOString() }));
     return;
   }
   if (req.method !== 'GET' && req.method !== 'HEAD') {

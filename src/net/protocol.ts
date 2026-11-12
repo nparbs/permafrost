@@ -1,11 +1,12 @@
 // Messages between the page and the server. Both sides import this file.
 
 import type { Action, ActResult } from '../sim/actions';
+import type { Market } from '../sim/market';
 import type { Player, PlayerStats, Rig } from '../sim/player';
 import type { Input, SimEvent } from '../sim/rig';
 
 /** Bump when old pages can't talk to a new server. They're told to refresh. */
-export const PROTOCOL_VERSION = 4;
+export const PROTOCOL_VERSION = 5;
 
 export const packInput = (i: Input): number => (i.left ? 1 : 0) | (i.right ? 2 : 0) | (i.up ? 4 : 0) | (i.down ? 8 : 0);
 export const unpackInput = (b: number): Input => ({ left: (b & 1) > 0, right: (b & 2) > 0, up: (b & 4) > 0, down: (b & 8) > 0 });
@@ -44,8 +45,51 @@ export interface WorldInfo {
    * the server moves this forward over any time the world sat empty.
    */
   started?: number;
+  /** When this season ends, in ms on the server's clock. The map, rigs, cash and upgrades reset then. */
+  ends?: number;
+  /** The ore market as it stands (see src/sim/market.ts). */
+  market?: Market;
   /** Changed tiles, packed by encodeDiffs. */
   diffs: string;
+}
+
+export const BOARD_KEYS = ['deepest', 'earned', 'relics', 'rescues'] as const;
+export type BoardKey = (typeof BOARD_KEYS)[number];
+
+export interface BoardRow {
+  id: string;
+  name: string;
+  v: number;
+}
+
+/** The first miner to dig up a mineral this season. `depth` is in tiles, `at` in ms. */
+export interface First {
+  mineral: string;
+  id: string;
+  name: string;
+  depth: number;
+  at: number;
+}
+
+/** A season's leaderboards: the top miners on each board. */
+export interface Standings {
+  season: number;
+  /** How many miners have a rig this season. */
+  miners: number;
+  boards: Record<BoardKey, BoardRow[]>;
+  firsts: First[];
+}
+
+/** How a season ended, kept after the map resets. */
+export interface SeasonRecord extends Standings {
+  ended: number;
+}
+
+/** Shown once to a miner who played the season that just ended: the final boards and where they came. */
+export interface Recap {
+  record: SeasonRecord;
+  /** Your final numbers and rank (1 is top) on each board. */
+  you: Record<BoardKey, { v: number; rank: number }>;
 }
 
 export type ClientMsg =
@@ -58,11 +102,13 @@ export type ClientMsg =
   /** Ask everyone for fuel. Only works while stalled. The server also sends one out by itself when a rig stalls. */
   | { t: 'sos' }
   /** Give a Fuel Cell to the stalled miner `id` parked next to you. */
-  | { t: 'aid'; id: string };
+  | { t: 'aid'; id: string }
+  /** Ask for the leaderboards. */
+  | { t: 'boards' };
 
 export type ServerMsg =
   /** `now` is the server's clock in ms, so weather and steam vents line up. */
-  | { t: 'welcome'; v: number; token: string; you: PeerInfo; world: WorldInfo; player: Player; peers: PeerInfo[]; online: number; now: number }
+  | { t: 'welcome'; v: number; token: string; you: PeerInfo; world: WorldInfo; player: Player; peers: PeerInfo[]; online: number; now: number; recap?: Recap }
   /** Your rig as the server has it after input `ack`. Items are here because an empty tank burns a Fuel Cell. */
   | { t: 'snap'; ack: number; rig: Rig; cargo: Record<string, number>; items: Player['items']; stats: PlayerStats }
   /** Your full state, after anything changes your cash, upgrades or items. */
@@ -83,7 +129,13 @@ export type ServerMsg =
   | { t: 'sos'; id: string; name: string; depth: number }
   /** `by` refuelled `to`, who paid `fee`. Everyone hears about it. */
   | { t: 'rescue'; by: string; byName: string; to: string; toName: string; fee: number }
-  | { t: 'error'; code: 'version' | 'token' | 'replaced' | 'full'; msg: string };
+  /** The ore market after a sale. */
+  | { t: 'market'; m: Market }
+  /** A miner dug up something worth telling everyone about. `first` means nobody had found one this season. `depth` is in tiles. */
+  | { t: 'find'; id: string; name: string; mineral: string; first: boolean; depth: number }
+  /** The leaderboards: this season so far, and the season before if there was one. */
+  | { t: 'boards'; now: Standings; ends: number; last: SeasonRecord | null }
+  | { t: 'error'; code: 'version' | 'token' | 'replaced' | 'full' | 'season'; msg: string };
 
 /** Pack [index, tile] pairs into base64: 4 bytes each, little-endian, index << 8 | tile. */
 export function encodeDiffs(pairs: Iterable<[number, number]>): string {

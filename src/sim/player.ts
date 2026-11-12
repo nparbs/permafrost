@@ -1,6 +1,7 @@
 // A player's persistent state: the rig, its upgrades, cash, cargo and items.
 
 import { newItems, type ItemKey } from './items';
+import { priceOf } from './market';
 import { MINERALS } from './tiles';
 import { newUpgrades, tierOf, type Upgrades } from './upgrades';
 import type { World } from './world';
@@ -60,6 +61,8 @@ export interface PlayerStats {
   rescues: number;
   /** Rigs lost. */
   deaths: number;
+  /** Relics dug up. */
+  relics: number;
 }
 
 export interface Player {
@@ -124,7 +127,7 @@ export function newPlayer(world: World, name = 'Miner'): Player {
       x: 0, y: 0, vx: 0, vy: 0, facing: 1, grounded: true, thrusting: false, drill: null,
       fuel: 0, hull: 0, stalled: false, wrecked: false, wreckedBy: null, cold: false, hot: false, scald: false,
     },
-    stats: { deepest: 0, earned: 0, trips: 0, dug: 0, rescues: 0, deaths: 0 },
+    stats: { deepest: 0, earned: 0, trips: 0, dug: 0, rescues: 0, deaths: 0, relics: 0 },
     seen: [],
   };
   // One Fuel Cell to start with: it fires by itself the first time the tank runs dry.
@@ -143,8 +146,9 @@ export function cargoCount(p: Player): number {
   return n;
 }
 
-export function cargoValue(p: Player): number {
+/** What the cargo would sell for right now. */
+export function cargoValue(p: Player, world: World): number {
   let v = 0;
-  for (const m of MINERALS) v += (p.cargo[m.key] ?? 0) * m.value;
+  for (const m of MINERALS) v += (p.cargo[m.key] ?? 0) * priceOf(world, m);
   return v;
 }

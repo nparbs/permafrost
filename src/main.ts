@@ -12,11 +12,12 @@ import { NetSession } from './net/netSession';
 import { PAINT_COUNT } from './net/protocol';
 import { dayNumber } from './sim/daytime';
 import { ITEMS, ITEM_ORDER } from './sim/items';
+import { BOUNTY_BONUS, bountyOf, priceOf } from './sim/market';
 import { cargoCount, cargoValue, statsOf, type HurtCause } from './sim/player';
 import { fuelToSurface, rigDepth, type Input } from './sim/rig';
-import { MINERALS, T, tileDef } from './sim/tiles';
+import { MINERALS, MINERAL_INDEX, T, tileDef } from './sim/tiles';
 import { blizzardAt, ventActive } from './sim/weather';
-import { UI, esc, layerForDepth, money, whyText, type TitleInfo } from './ui/ui';
+import { UI, esc, layerForDepth, money, timeLeft, whyText, type TitleInfo } from './ui/ui';
 import { METERS_PER_TILE, SKY } from './sim/world';
 
 const sfx = new Sfx();
@@ -100,6 +101,7 @@ function use(s: GameSession): void {
   queued = null;
   homeWarned = false;
   lastDay = 0;
+  lastBounty = '';
   ui.setBusy(false);
   ui.hideDeath();
   scene()?.scene.restart({ session: s, onFrame, onCue } satisfies SceneData);
@@ -125,6 +127,11 @@ function play(): void {
 
 // ------------------------------------------------------------ cutscenes
 
+/** The season summary has been shown on this page. */
+let recapShown = false;
+/** The day's bounty ore last announced, so a new one gets a note. */
+let lastBounty = '';
+
 /** A death or arrival scene is playing: the rig is out of the player's hands. */
 let cine = false;
 /** A scene to start on the next frame, once the game scene is showing this session. */
@@ -147,6 +154,11 @@ function arrive(kind: 'new' | 'respawn'): void {
       if (s instanceof LocalSession) saveSession(s);
       if (kind === 'new') ui.toast('Depot: "Tank\'s full. Sell what you dig at the Assay Office, and watch that gauge."', '', 5000);
       else ui.toast('A fresh rig on the pad: full tank, full hull.', 'good', 3200);
+      // Back for a new season: show how the last one ended, once.
+      if (kind === 'new' && s.recap && !recapShown) {
+        recapShown = true;
+        ui.showRecap(s.recap);
+      }
     });
   };
 }
@@ -162,7 +174,7 @@ function die(cause: HurtCause): void {
   ui.setBusy(true);
   s.releaseInput();
   s.paused = true;
-  ui.showDeath(cause, rigDepth(p.rig), cargoCount(p), cargoValue(p));
+  ui.showDeath(cause, rigDepth(p.rig), cargoCount(p), cargoValue(p, s.world));
   scene()!.playDeath(cause, () => {
     if (session !== s) return;
     s.act({ a: 'respawn' });
@@ -215,7 +227,10 @@ async function goOnline(o: { name: string; paint: number; token?: string }): Pro
     const s = await join(o);
     use(s);
     play();
-    ui.toast(`Welcome to Rime Station, ${s.me.name}. ${s.onlineCount()} online.`, 'good', 3000);
+    ui.toast(`Welcome to Rime Station, ${esc(s.me.name)}. ${s.onlineCount()} online.`, 'good', 3000);
+    const se = s.season();
+    const left = se ? se.ends - s.world.time * 1000 : Infinity;
+    if (se && left < 3 * 86_400_000) ui.toast(`Season ${se.n} ends in ${timeLeft(left)}. The map, rigs, cash and upgrades reset then.`, 'warn', 6000);
   } catch (e) {
     ui.showTitle(titleInfo(e instanceof Error ? e.message : String(e)));
   }
@@ -279,6 +294,13 @@ function onFrame(game: GameScene): void {
   sfx.thrust(r.thrusting && !idle);
   if (idle) return;
 
+  // The Combine's bounty changes at midnight UTC. Say so once, and again when it changes.
+  const bounty = bountyOf(session.world.seed, session.world.time);
+  if (bounty.key !== lastBounty) {
+    lastBounty = bounty.key;
+    const known = session.player.seen.includes(bounty.key);
+    ui.toast(`Assayer: "Today's bounty is on <b style="color:${known ? bounty.light : '#fff'}">${known ? bounty.name : 'something you haven\'t dug up yet'}</b>. It pays ${Math.round((BOUNTY_BONUS - 1) * 100)}% extra."`, '', 5200);
+  }
   const today = dayNumber(session.world);
   if (lastDay && today > lastDay) ui.toast(`Sunrise. <b>Day ${today}</b> at Rime Station.`, '', 2600);
   lastDay = today;
@@ -345,7 +367,7 @@ function onEvent(e: SessionEvent): void {
     case 'pickup': {
       const m = MINERALS[e.mineral];
       sfx.pickup(e.mineral / (MINERALS.length - 1));
-      if (m.value >= 500) ui.toast(`<b style="color:${m.light}">${m.name}</b> · ${money(m.value)}`, 'good');
+      if (m.value >= 500) ui.toast(`<b style="color:${m.light}">${m.name}</b> · ${money(priceOf(session.world, m))}`, 'good');
       break;
     }
     case 'cargo-full':
@@ -448,6 +470,24 @@ function onEvent(e: SessionEvent): void {
         ui.toast(`${esc(e.byName)} refuelled ${esc(e.toName)}.`, '', 2200);
       }
       break;
+    case 'find': {
+      const m = MINERALS[MINERAL_INDEX[e.mineral]];
+      if (!m) break;
+      // Only name a mineral to miners who have dug one up themselves, so the deep finds stay a mystery.
+      const known = e.mine || session.player.seen.includes(m.key);
+      const what = `<b style="color:${known ? m.light : '#fff'}">${known ? m.name : 'something new'}</b>`;
+      const depth = `${e.depth * METERS_PER_TILE} m`;
+      if (e.first) ui.toast(e.mine ? `First ${what} of the season. It's on the board under your name.` : `${esc(e.name)} dug up the season's first ${what} at ${depth}.`, 'good', 4600);
+      else if (!e.mine) ui.toast(`${esc(e.name)} found ${known ? (m.kind === 'relic' ? 'a ' : '') : ''}${what} at ${depth}.`, '', 3600);
+      if (!e.mine || e.first) sfx.find();
+      break;
+    }
+    case 'market':
+      ui.refreshIf('assay');
+      break;
+    case 'boards':
+      ui.refreshIf('boards');
+      break;
     case 'chat':
       ui.addChat(e.name, e.text, e.mine);
       if (!e.mine) sfx.click();
@@ -460,6 +500,7 @@ function onEvent(e: SessionEvent): void {
       break;
     case 'disconnected':
       if (!session.online || ui.titleOpen) break;
+      if (/^Season \d+ is over/.test(e.reason)) ui.toast(`${e.reason} Flying you in.`, 'good', 5000);
       if (/another screen|new version|code/i.test(e.reason)) {
         ui.showDisconnected(e.reason, () => {
           ui.closePanel(false);

@@ -158,6 +158,11 @@ export class Sfx {
     if (rank > 0.6) this.tone(base * 2, 0.18, 'triangle', 0.1, 0.12);
   }
 
+  /** Word of a big find over the radio. */
+  find(): void {
+    [784, 988, 1175].forEach((f, i) => this.tone(f, 0.16, 'triangle', 0.09, i * 0.09));
+  }
+
   sell(): void {
     [660, 830, 990, 1320].forEach((f, i) => this.tone(f, 0.12, 'square', 0.08, i * 0.07));
   }

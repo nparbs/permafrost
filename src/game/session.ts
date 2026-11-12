@@ -7,6 +7,7 @@ import type { ItemKey } from '../sim/items';
 import { newPlayer, type HurtCause, type Player } from '../sim/player';
 import { STEP, noInput, step, type Input, type SimEvent } from '../sim/rig';
 import { World } from '../sim/world';
+import type { Recap, SeasonRecord, Standings } from '../net/protocol';
 
 export const SOLO_WIDTH = 80;
 
@@ -24,7 +25,21 @@ export type SessionEvent =
   | { t: 'peer-sos'; id: string; name: string; depth: number; mine: boolean }
   /** Someone refuelled a stalled miner. `role` says whether that was you. */
   | { t: 'rescue'; byName: string; toName: string; fee: number; role: 'helper' | 'helped' | 'none' }
+  /** A miner (maybe you) dug up something everyone hears about. `mineral` is its key, `depth` in tiles. */
+  | { t: 'find'; name: string; mineral: string; first: boolean; depth: number; mine: boolean }
+  /** Somebody sold ore and prices moved. */
+  | { t: 'market' }
+  /** The leaderboards arrived (see `boards()`). */
+  | { t: 'boards' }
   | { t: 'disconnected'; reason: string };
+
+/** The leaderboards as last sent by the server. */
+export interface BoardsInfo {
+  now: Standings;
+  /** When the season ends, in ms on the world's clock (world.time * 1000). */
+  ends: number;
+  last: SeasonRecord | null;
+}
 
 export type Listener = (e: SessionEvent) => void;
 
@@ -77,6 +92,13 @@ export interface GameSession {
   readonly sosSent: boolean;
   /** Hand a Fuel Cell to the stalled miner `id` (online). */
   aid(id: string): void;
+  /** Online: this season's number and when it ends, in ms on the world's clock. Null offline. */
+  season(): { n: number; ends: number } | null;
+  /** The leaderboards as last received, or null. Call askBoards() to fetch them; a 'boards' event follows. */
+  boards(): BoardsInfo | null;
+  askBoards(): void;
+  /** How last season ended, for a miner who played it and is joining the new one for the first time. */
+  readonly recap: Recap | null;
   close(): void;
 }
 
@@ -163,6 +185,14 @@ export class LocalSession implements GameSession {
   readonly sosSent = false;
   sos(): void {}
   aid(): void {}
+  readonly recap = null;
+  season(): null {
+    return null;
+  }
+  boards(): null {
+    return null;
+  }
+  askBoards(): void {}
 
   close(): void {
     this.env.detach();
