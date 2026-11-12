@@ -4,6 +4,7 @@
 import { newItems } from './items';
 import { newPlayer, placeRig, type Player } from './player';
 import { rigBlocked } from './rig';
+import { LOGS } from './story';
 import { UPGRADES, UPGRADE_ORDER, newUpgrades } from './upgrades';
 import type { World } from './world';
 
@@ -21,6 +22,8 @@ export function revivePlayer(world: World, raw: unknown): Player {
     rig: { ...base.rig, ...(src.rig ?? {}) },
     stats: { ...base.stats, ...(src.stats ?? {}) },
     seen: Array.isArray(src.seen) ? src.seen.filter((k) => typeof k === 'string') : [],
+    logs: Array.isArray(src.logs) ? [...new Set(src.logs.filter((k) => Number.isInteger(k) && k >= 0 && k < LOGS.length))] : [],
+    prestige: Math.max(0, Math.floor(num(src.prestige, 0))),
   };
   for (const k of UPGRADE_ORDER) p.upgrades[k] = Math.max(0, Math.min(UPGRADES[k].tiers.length - 1, Math.floor(num(p.upgrades[k], 0))));
   const r = p.rig;

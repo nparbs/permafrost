@@ -82,6 +82,18 @@ export type SimEvent =
   /** The tank ran dry and the rig burned a Fuel Cell by itself. `left` is how many remain. */
   | { t: 'reserve'; left: number }
   | { t: 'stalled' }
+  /** Touched a Halvorsen recorder for the first time. `id` is an index into LOGS. */
+  | { t: 'log'; id: number }
+  /** The Hearth is drawing breath: a freezing pulse lands in `inSeconds`. */
+  | { t: 'hearth-charge'; inSeconds: number }
+  /** The pulse. `hit` is whether the rig was on the ground for it. */
+  | { t: 'hearth-pulse'; hit: boolean }
+  /** A vent broke. `left` is how many remain. */
+  | { t: 'hearth-vent'; left: number }
+  /** All four vents are gone and the heart is exposed. */
+  | { t: 'hearth-open' }
+  /** The heart is broken. The Hollow is coming down: climb. */
+  | { t: 'hearth-broken' }
   | { t: 'wrecked'; cause: HurtCause };
 
 const EPS = 1e-6;
@@ -199,6 +211,26 @@ function touching(world: World, r: Rig, tile: number): boolean {
   return false;
 }
 
+/** A rig that touches a recorder has its log. The recorder stays where it is for the next miner. */
+function collectLogs(p: Player, world: World, ev: SimEvent[]): void {
+  const r = p.rig;
+  // A little reach, so a rig parked in the tile next door has it without having to nudge in.
+  const pad = 0.2;
+  const x0 = Math.floor(r.x - RIG_W / 2 - pad);
+  const x1 = Math.floor(r.x + RIG_W / 2 + pad);
+  const y0 = Math.floor(r.y - RIG_H / 2 - pad);
+  const y1 = Math.floor(r.y + RIG_H / 2 + pad);
+  for (let ty = y0; ty <= y1; ty++) {
+    for (let tx = x0; tx <= x1; tx++) {
+      if (world.get(tx, ty) !== T.LOG) continue;
+      const id = world.logIdAt(tx, ty);
+      if (id < 0 || p.logs.includes(id)) continue;
+      p.logs.push(id);
+      ev.push({ t: 'log', id });
+    }
+  }
+}
+
 export function digDuration(p: Player, tile: number, coldDeg = 0): number {
   const s = statsOf(p);
   const slow = 1 + coldDeg * HAZARD.coldDrill;
@@ -274,6 +306,7 @@ function finishDrill(p: Player, world: World, ev: SimEvent[]): void {
 export function step(p: Player, world: World, input: Input, dt: number, ev: SimEvent[]): void {
   const r = p.rig;
   if (r.wrecked) return;
+  if (world.logs.length) collectLogs(p, world, ev);
   const s = statsOf(p);
   const depth = rigDepth(r);
   const underground = depth > 0.05;

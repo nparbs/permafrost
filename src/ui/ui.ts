@@ -3,6 +3,9 @@
 import type { Sfx } from '../game/audio';
 import type { GameSession } from '../game/session';
 import { BOARD_KEYS, type BoardKey, type Recap, type Standings } from '../net/protocol';
+import { HEARTH, atExit, atGate } from '../sim/hearth';
+import { LOGS } from '../sim/story';
+import { STAR_MAX, STAR_SHARE, starBonus } from '../sim/market';
 import { BOUNTY_BONUS, MARKET, bountyLeft, bountyOf, marketFactor, priceOf, trend } from '../sim/market';
 import { quality, type Quality } from '../game/gfx';
 import { PAINTS } from '../game/textures';
@@ -17,7 +20,7 @@ import { dayNumber, dayPart, dayPhase } from '../sim/daytime';
 import { ambientTemp, blizzardAt } from '../sim/weather';
 import { LAYERS, MINERALS } from '../sim/tiles';
 import { UPGRADES, UPGRADE_ORDER, type UpgradeKey } from '../sim/upgrades';
-import { METERS_PER_TILE, type Building } from '../sim/world';
+import { METERS_PER_TILE, SKY as SKY_ROW, type Building } from '../sim/world';
 import { Minimap, WorldMap } from './minimap';
 
 declare const __APP_VERSION__: string;
@@ -33,6 +36,9 @@ export function timeLeft(ms: number): string {
   if (h >= 1) return '1 hour';
   return 'under an hour';
 }
+/** Seconds as "4:07". */
+export const clock = (s: number) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
+export const stars = (n: number) => '★'.repeat(Math.max(0, Math.min(STAR_MAX, n)));
 export const prettyCode = (t: string) => t.replace(/(.{4})(?=.)/g, '$1-');
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls = '', html = ''): HTMLElementTagNameMap[K] {
@@ -82,6 +88,7 @@ const BOARDS: Record<BoardKey, { title: string; show: (v: number) => string }> =
   earned: { title: 'Most earned', show: (v) => money(v) },
   relics: { title: 'Relics found', show: (v) => String(v) },
   rescues: { title: 'Rescues', show: (v) => String(v) },
+  hearth: { title: 'Fastest Hearth', show: (v) => clock(v) },
 };
 
 /** The key hint on the button Space presses. Hidden on touch screens along with every other <kbd>. */
@@ -121,6 +128,11 @@ const DEATHS: Record<HurtCause, { title: string; sub: string; radio: string[] }>
     title: 'Cooked',
     sub: 'Overheated',
     radio: ['Mechanic: "Radiators. We sell them. Just saying."', 'Depot: "Warm down there? Must be nice."'],
+  },
+  frost: {
+    title: 'Flash-frozen',
+    sub: 'Caught on the ground by the Hearth',
+    radio: ['Mechanic: "It breathes in, then it bites. Be in the air for the bite."', 'Depot: "Froze solid at three hundred degrees. That\'s a new one for the board."'],
   },
   steam: {
     title: 'Scalded',
@@ -205,6 +217,14 @@ export class UI {
   /** Marks the fuel for the flight home on the fuel gauge. */
   private homeMark: HTMLElement;
   private sosArrow: HTMLElement;
+  /** The state of the Hearth fight, under the top of the screen. */
+  private hearthHud: HTMLElement;
+  private credits: HTMLElement;
+  private creditsDone: (() => void) | null = null;
+  /** The recorder whose text is unfolded in the Comms Tower. */
+  private logOpen = -1;
+  /** Recorders found since the Comms Tower was last opened. */
+  private newLogs = new Set<number>();
   private death: HTMLElement;
   /** A cutscene is playing: no panels, prompts or items. */
   busy = false;
@@ -250,6 +270,8 @@ export class UI {
     r.appendChild(el('div', 'bars'));
     this.sosArrow = r.appendChild(el('div', 'sos-arrow', '<i></i><span></span>'));
     this.death = r.appendChild(el('div', 'death'));
+    this.hearthHud = r.appendChild(el('div', 'hearth-hud'));
+    this.credits = r.appendChild(el('div', 'credits hidden'));
     this.banner = r.appendChild(el('div', 'banner'));
     this.toasts = r.appendChild(el('div', 'toasts'));
     this.prompt = r.appendChild(button('', () => this.interact(), 'prompt'));
@@ -446,13 +468,26 @@ export class UI {
     }
 
     const pr = this.render || this.busy ? null : this.promptNow();
-    const key = pr ? (pr.kind === 'building' ? `b:${pr.b.key}` : pr.kind === 'aid' ? `a:${pr.id}:${pr.name}` : 'stall') : '';
+    const key = pr ? (pr.kind === 'building' ? `b:${pr.b.key}` : pr.kind === 'aid' ? `a:${pr.id}:${pr.name}` : pr.kind) : '';
     if (key !== this.promptKey) {
       this.promptKey = key;
       this.prompt.classList.toggle('show', !!pr);
       if (pr?.kind === 'building') this.prompt.innerHTML = `<kbd>E</kbd><b>Enter</b><span>${pr.b.name}</span>`;
       else if (pr?.kind === 'stall') this.prompt.innerHTML = `<kbd>E</kbd><b>Stalled</b><span>Options</span>`;
       else if (pr?.kind === 'aid') this.prompt.innerHTML = `<kbd>E</kbd><b>Refuel</b><span>${esc(pr.name)}</span>`;
+      else if (pr?.kind === 'gate') this.prompt.innerHTML = `<kbd>E</kbd><b>Enter</b><span>The Hearth</span>`;
+      else if (pr?.kind === 'exit') this.prompt.innerHTML = `<kbd>E</kbd><b>Leave</b><span>The Hearth</span>`;
+    }
+    const h = this.busy || this.titleOpen ? null : this.s.hearth();
+    this.hearthHud.classList.toggle('show', !!h);
+    if (h) {
+      const soon = h.phase === 'fight' && h.pulseIn < HEARTH.warn;
+      let text: string;
+      if (h.phase === 'escape') text = `Climb! Heat ${Math.max(0, Math.round((h.wave - r.y) * METERS_PER_TILE))} m below`;
+      else if (soon) text = 'Pulse! Get off the ground';
+      else text = `${h.open ? 'Heart exposed' : `Vents left: ${h.vents}`} · pulse in ${Math.ceil(h.pulseIn)}`;
+      this.setText(this.hearthHud, text);
+      this.hearthHud.classList.toggle('warn', soon || h.phase === 'escape');
     }
     this.minimap.frame(this.s, this.s.online && !this.titleOpen && this.s.mapPeers().length > 0);
     this.frameSos();
@@ -597,6 +632,9 @@ export class UI {
     const b = buildingAt(this.s.world, p);
     if (b) return { kind: 'building', b };
     const r = p.rig;
+    const h = this.s.hearth();
+    if (h) return atExit({ phase: h.phase, world: this.s.world }, p) ? { kind: 'exit' } : null;
+    if (atGate(this.s.world, p)) return { kind: 'gate' };
     if (r.stalled && !r.wrecked) return { kind: 'stall' };
     if (!this.s.online || r.wrecked || r.drill) return null;
     for (const o of this.s.peers()) {
@@ -612,6 +650,104 @@ export class UI {
     if (pr?.kind === 'building') this.openBuilding(pr.b);
     else if (pr?.kind === 'stall') this.showStalled();
     else if (pr?.kind === 'aid') this.giveFuel(pr.id, pr.name);
+    else if (pr?.kind === 'gate') this.showGate();
+    else if (pr?.kind === 'exit') this.s.act({ a: 'leave' });
+  }
+
+  /** At the Hearth's gate: what's inside, what it takes, and the way in. */
+  private showGate(): void {
+    this.sfx.click();
+    this.openPanel('The Hearth', () => {
+      const p = this.s.player;
+      const box = el('div', 'pnl');
+      const charges = (p.items.charge ?? 0) + (p.items.megacharge ?? 0);
+      box.appendChild(el('p', '', 'The gate is warm. Behind it something very large is breathing in.'));
+      box.appendChild(
+        el('p', 'note', 'Break its four heat vents with charges, then the heart, from on top of the machine. It sends out freezing pulses: be off the ground when one lands. Ice comes off the roof. When the heart breaks the Hollow comes down, and the only way out is up.'),
+      );
+      box.appendChild(el('p', charges >= 5 ? '' : 'warn-line', `You carry <b>${charges}</b> ${charges === 1 ? 'charge' : 'charges'}. It takes five.`));
+      box.appendChild(el('p', 'note', 'Breaking the Hearth ends this run: credits, a prestige star, and a new rig with nothing in the bank. Losing the rig in there costs the ore on board, as anywhere. You can come back out through the gate until the heart breaks.'));
+      const go = () => {
+        this.closePanel(false);
+        const res = this.s.act({ a: 'enter' });
+        if (!res.ok) this.toast('The gate stays shut. Park in it first.', 'warn');
+      };
+      box.appendChild(button(`${SPACE}Go in`, go, 'primary wide'));
+      box.appendChild(button('Not yet', () => this.closePanel(), 'wide'));
+      this.confirm = go;
+      return box;
+    }, true, 'gate');
+  }
+
+  /** A recorder was found: mark it new at the Comms Tower. */
+  noteLog(id: number): void {
+    this.newLogs.add(id);
+  }
+
+  /** The Comms Tower: play back the recorders you've found, and see the signals of the next few. */
+  private commsPanel(): HTMLElement {
+    const p = this.s.player;
+    const w = this.s.world;
+    const box = el('div', 'pnl');
+    this.confirm = () => this.closePanel();
+    const found = new Set(p.logs);
+    box.appendChild(el('p', '', `Halvorsen recorders: <b>${found.size}</b> of ${LOGS.length}`));
+    if (!found.size) box.appendChild(el('p', 'note', 'Forty years ago the Halvorsen Expedition dug here first and never came back. Their recorders are still down there. Touch one with the rig and the tower can play it.'));
+    const list = box.appendChild(el('div', 'logs'));
+    LOGS.forEach((log, id) => {
+      if (!found.has(id)) return;
+      const open = this.logOpen === id;
+      const row = list.appendChild(el('div', `log${open ? ' open' : ''}${this.newLogs.has(id) ? ' new' : ''}`));
+      row.appendChild(
+        button(`<b>${id + 1}.</b> ${esc(log.title)} <span class="dim">· ${esc(log.who)}</span>${this.newLogs.has(id) ? ' <span class="tag bounty">New</span>' : ''}`, () => {
+          this.logOpen = open ? -1 : id;
+          this.newLogs.delete(id);
+          this.sfx.click();
+          this.rerender();
+        }, 'log-h'),
+      );
+      if (open) row.appendChild(el('p', 'log-text', esc(log.text)));
+    });
+    // The tower holds the three shallowest signals it hasn't got yet.
+    const next = w.logs.filter((l) => !found.has(l.id)).slice(0, 3);
+    if (next.length) {
+      box.appendChild(el('p', 'sig-h', 'Signals'));
+      const tbl = box.appendChild(el('table', 'sale'));
+      for (const l of next) {
+        const dx = Math.round(l.x + 0.5 - p.rig.x);
+        const side = dx === 0 ? 'right below' : `${Math.abs(dx) * METERS_PER_TILE} m ${dx < 0 ? 'left' : 'right'}`;
+        tbl.appendChild(el('tr', '', `<td>Recorder ${l.id + 1}</td><td>${meters(l.y - SKY_ROW)} down</td><td>${side}</td>`));
+      }
+      box.appendChild(el('p', 'note', 'Distances are from the tower. A recorder blinks red in the dark. Drive the rig into it.'));
+    } else {
+      box.appendChild(el('p', 'note', 'That is all of them.'));
+    }
+    return box;
+  }
+
+  /** The credits, over whatever the game is showing. Space, Enter or a tap on the button ends them. */
+  showCredits(lines: string[], foot: string, done: () => void): void {
+    this.closePanel(false);
+    this.creditsDone = done;
+    const c = this.credits;
+    c.innerHTML = '';
+    const roll = c.appendChild(el('div', 'roll'));
+    for (const l of lines) roll.appendChild(el('p', l === l.toUpperCase() ? 'big' : '', esc(l)));
+    roll.appendChild(el('p', 'foot', foot));
+    c.appendChild(button(`${SPACE}Back to the ice`, () => this.endCredits(), 'primary'));
+    c.classList.remove('hidden');
+  }
+
+  get creditsOpen(): boolean {
+    return this.creditsDone !== null;
+  }
+
+  endCredits(): void {
+    const done = this.creditsDone;
+    if (!done) return;
+    this.creditsDone = null;
+    this.credits.classList.add('hidden');
+    done();
   }
 
   private giveFuel(id: string, name: string): void {
@@ -706,7 +842,7 @@ export class UI {
       const st = this.boardTab === 'last' ? info.last! : info.now;
       const stats = this.s.player.stats;
       const grid = box.appendChild(el('div', 'boards'));
-      for (const k of BOARD_KEYS) grid.appendChild(this.boardTable(st, k, this.boardTab === 'now' ? { v: Math.floor(stats[k] ?? 0), rank: 0 } : undefined));
+      for (const k of BOARD_KEYS) grid.appendChild(this.boardTable(st, k, this.boardTab === 'now' ? { v: Math.floor((k === 'hearth' ? stats.hearthBest : stats[k]) ?? 0), rank: 0 } : undefined));
       box.appendChild(
         el('p', 'note', this.boardTab === 'last' ? `How season ${info.last!.season} ended.` : 'When the season ends, the map is regenerated and rigs, cash and upgrades start over. The final boards are kept.'),
       );
@@ -785,6 +921,11 @@ export class UI {
       }
       return true;
     }
+    if (this.creditsDone) {
+      if ((e.code === 'Space' || e.code === 'Enter' || e.code === 'Escape') && !e.repeat) this.endCredits();
+      e.preventDefault();
+      return true;
+    }
     if (this.busy || this.chatOpen) return true;
     if (this.render) {
       const arrow = NAV_KEYS[e.code];
@@ -828,6 +969,7 @@ export class UI {
       shop: () => this.shopPanel(),
       repair: () => this.repairPanel(),
       supply: () => this.supplyPanel(),
+      comms: () => this.commsPanel(),
     };
     this.sfx.click();
     // Start the highlight on the first thing you can afford.
@@ -944,6 +1086,8 @@ export class UI {
         const m = MINERALS.find((mm) => mm.key === l.key)!;
         tbl.appendChild(el('tr', '', `<td><i class="sw" style="background:${m.color}"></i>${l.name} ${this.priceTag(m)}</td><td>${l.count} × ${money(l.each)}</td><td>${money(l.total)}</td>`));
       }
+      const bonus = starBonus(p.prestige, lines.reduce((s, l) => s + l.total, 0));
+      if (bonus > 0) tbl.appendChild(el('tr', 'me', `<td>${stars(p.prestige)} Hearthbreaker bonus</td><td>+${Math.round(STAR_SHARE * Math.min(STAR_MAX, p.prestige) * 100)}%</td><td>${money(bonus)}</td>`));
       const sell = () => this.run({ a: 'sell' }, (r) => this.finish(`+${money(r.total ?? 0)}`, FLOAT.cash));
       box.appendChild(button(`${SPACE}Sell everything · ${money(cargoValue(p, w))}`, sell, 'primary wide'));
       this.confirm = sell;
@@ -1153,7 +1297,7 @@ export class UI {
         }, 'wide danger'));
       }
       box.appendChild(
-        el('p', 'note', `Deepest: <b>${meters(p.stats.deepest)}</b> · Earned: <b>${money(p.stats.earned)}</b> · Trips sold: <b>${p.stats.trips}</b> · Tiles dug: <b>${p.stats.dug}</b>${p.stats.rescues ? ` · Rescues: <b>${p.stats.rescues}</b>` : ''}${p.stats.deaths ? ` · Rigs lost: <b>${p.stats.deaths}</b>` : ''}`),
+        el('p', 'note', `Deepest: <b>${meters(p.stats.deepest)}</b> · Earned: <b>${money(p.stats.earned)}</b> · Trips sold: <b>${p.stats.trips}</b> · Tiles dug: <b>${p.stats.dug}</b>${p.stats.rescues ? ` · Rescues: <b>${p.stats.rescues}</b>` : ''}${p.stats.deaths ? ` · Rigs lost: <b>${p.stats.deaths}</b>` : ''} · Recorders: <b>${p.logs.length}/${LOGS.length}</b>${p.prestige ? ` · Prestige: <b>${stars(p.prestige)}</b>${p.stats.hearthBest ? ` · Fastest Hearth: <b>${clock(p.stats.hearthBest)}</b>` : ''}` : ''}`),
       );
       box.appendChild(el('p', 'note dim', `Permafrost v${__APP_VERSION__}. ${this.s.online ? 'Saved on the server.' : 'Saved in this browser.'}`));
       return box;
@@ -1168,7 +1312,7 @@ const NAV_KEYS: Record<string, [number, number]> = {
   ArrowDown: [0, 1], KeyS: [0, 1],
 };
 
-type Prompt = { kind: 'building'; b: Building } | { kind: 'stall' } | { kind: 'aid'; id: string; name: string };
+type Prompt = { kind: 'building'; b: Building } | { kind: 'stall' } | { kind: 'aid'; id: string; name: string } | { kind: 'gate' } | { kind: 'exit' };
 
 export function layerForDepth(d: number): number {
   let i = 0;

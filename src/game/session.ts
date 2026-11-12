@@ -3,6 +3,7 @@
 
 import { applyAction, type Action, type ActResult } from '../sim/actions';
 import { Environment } from '../sim/env';
+import { atExit, atGate, enterHearth, hearthStep, leaveHearth, viewOf, winHearth, type HearthRun, type HearthView } from '../sim/hearth';
 import type { ItemKey } from '../sim/items';
 import { newPlayer, type HurtCause, type Player } from '../sim/player';
 import { STEP, noInput, step, type Input, type SimEvent } from '../sim/rig';
@@ -27,6 +28,12 @@ export type SessionEvent =
   | { t: 'rescue'; byName: string; toName: string; fee: number; role: 'helper' | 'helped' | 'none' }
   /** A miner (maybe you) dug up something everyone hears about. `mineral` is its key, `depth` in tiles. */
   | { t: 'find'; name: string; mineral: string; first: boolean; depth: number; mine: boolean }
+  /** Your rig went through the Hearth's gate: `session.world` is the arena now. */
+  | { t: 'hearth-enter' }
+  /** Your rig is back in the dig site (it left, was lost, or was recalled). */
+  | { t: 'hearth-leave' }
+  /** Somebody (maybe you) broke the Hearth and reached the surface. `time` is in seconds. */
+  | { t: 'hearth-won'; name: string; time: number; stars: number; mine: boolean }
   /** Somebody sold ore and prices moved. */
   | { t: 'market' }
   /** The leaderboards arrived (see `boards()`). */
@@ -47,6 +54,8 @@ export interface Peer {
   id: string;
   name: string;
   paint: number;
+  /** Prestige stars. */
+  stars: number;
   x: number;
   y: number;
   facing: number;
@@ -68,7 +77,10 @@ export interface MapPeer {
 
 export interface GameSession {
   readonly online: boolean;
+  /** The world the rig is in right now: the dig site, or the Hearth arena. It changes on 'hearth-enter' and 'hearth-leave'. */
   readonly world: World;
+  /** The fight, while the rig is in the Hearth arena. Null in the dig site. */
+  hearth(): HearthView | null;
   readonly player: Player;
   readonly input: Input;
   /** Offline: stops the clock. Online: the world keeps going, but your input is ignored. */
@@ -110,13 +122,34 @@ export class LocalSession implements GameSession {
   private acc = 0;
   private listeners: Listener[] = [];
   private env: Environment;
+  /** The Hearth fight, while the rig is in the arena. */
+  private run: HearthRun | null = null;
 
   constructor(
-    readonly world: World,
+    /** The dig site. `world` is this, or the Hearth arena while the rig is in it. */
+    readonly main: World,
     readonly player: Player,
   ) {
-    this.env = new Environment(world);
-    world.time = Date.now() / 1000;
+    this.env = new Environment(main);
+    main.time = Date.now() / 1000;
+  }
+
+  get world(): World {
+    return this.run?.world ?? this.main;
+  }
+
+  hearth(): HearthView | null {
+    return this.run ? viewOf(this.run) : null;
+  }
+
+  /** Where the rig is in the dig site: where it stands, or where it went through the gate. */
+  sitePos(): { x: number; y: number } | null {
+    return this.run ? this.run.back : null;
+  }
+
+  private endRun(): void {
+    this.run?.env.detach();
+    this.run = null;
   }
 
   static fresh(seed = (Math.random() * 2 ** 31) | 0): LocalSession {
@@ -136,22 +169,55 @@ export class LocalSession implements GameSession {
 
   update(dt: number): void {
     if (this.paused) return;
-    this.world.time = Date.now() / 1000;
+    this.main.time = Date.now() / 1000;
     this.acc = Math.min(this.acc + dt, 0.25);
-    const ev: SimEvent[] = [];
+    const ev: SessionEvent[] = [];
     while (this.acc >= STEP) {
-      step(this.player, this.world, this.input, STEP, ev);
+      this.acc -= STEP;
+      const run = this.run;
+      if (run) {
+        // In the Hearth: the arena's own clock and ice, and the dig site stands still.
+        run.world.time = this.main.time;
+        step(this.player, run.world, this.input, STEP, ev as SimEvent[]);
+        if (hearthStep(run, this.player, STEP, ev as SimEvent[])) {
+          const time = winHearth(run, this.player, this.main);
+          this.endRun();
+          ev.push({ t: 'hearth-won', name: this.player.name, time, stars: this.player.prestige, mine: true });
+        }
+        continue;
+      }
+      step(this.player, this.main, this.input, STEP, ev as SimEvent[]);
       const out = this.env.step([this.player], STEP);
       ev.push(...out.fx);
       for (const [, e] of out.personal) ev.push(e);
-      this.acc -= STEP;
     }
     this.emit(ev);
   }
 
   act(a: Action): ActResult {
-    const ev: SimEvent[] = [];
-    const res = applyAction(this.player, this.world, a, ev);
+    const ev: SessionEvent[] = [];
+    const p = this.player;
+    if (a.a === 'enter') {
+      if (this.run || !atGate(this.main, p)) return { ok: false, why: 'where' };
+      this.run = enterHearth(p, this.main);
+      this.emit([{ t: 'hearth-enter' }]);
+      return { ok: true };
+    }
+    if (a.a === 'leave') {
+      if (!this.run || !atExit(this.run, p)) return { ok: false, why: 'where' };
+      leaveHearth(this.run.back, p);
+      this.endRun();
+      this.emit([{ t: 'hearth-leave' }]);
+      return { ok: true };
+    }
+    if (this.run && (a.a === 'respawn' || (a.a === 'use' && a.k === 'beacon'))) {
+      // A new rig, or a recall, comes out in the dig site. There's no recalling out of the collapse.
+      if (a.a === 'use' && (this.run.phase !== 'fight' || (p.items.beacon ?? 0) <= 0 || p.rig.wrecked)) return { ok: false, why: 'state' };
+      if (a.a === 'use') leaveHearth(this.run.back, p);
+      this.endRun();
+      ev.push({ t: 'hearth-leave' });
+    }
+    const res = applyAction(p, this.world, a, ev as SimEvent[]);
     this.emit(ev);
     return res;
   }

@@ -4,6 +4,7 @@
 // put back first, so the replay digs them again at the same moments the server will.
 
 import type { BoardsInfo, GameSession, Listener, MapPeer, Peer, SessionEvent } from '../game/session';
+import { arenaFor, atExit, atGate, leaveHearth, moveIn, type HearthView } from '../sim/hearth';
 import { reviveMarket } from '../sim/market';
 import { applyAction, type Action, type ActResult } from '../sim/actions';
 import type { Player } from '../sim/player';
@@ -35,7 +36,13 @@ const MAX_UNACKED = 240;
 
 export class NetSession implements GameSession {
   readonly online = true;
-  readonly world: World;
+  /** The dig site. `world` is this, or the Hearth arena while the rig is in it. */
+  readonly main: World;
+  /** Our copy of the Hearth arena, while the rig is in it. The server runs the fight; we only predict the rig. */
+  private arena: World | null = null;
+  /** Where the rig went through the gate. */
+  private back = { x: 0, y: 0 };
+  private view: HearthView | null = null;
   readonly player: Player;
   readonly input = noInput();
   readonly me: PeerInfo;
@@ -71,10 +78,10 @@ export class NetSession implements GameSession {
     private conn: Transport,
     w: Welcome,
   ) {
-    this.world = new World(w.world.seed, w.world.width);
-    this.world.applyDiffs(decodeDiffs(w.world.diffs));
-    this.world.dirty.length = 0;
-    this.player = revivePlayer(this.world, w.player);
+    this.main = new World(w.world.seed, w.world.width);
+    this.main.applyDiffs(decodeDiffs(w.world.diffs));
+    this.main.dirty.length = 0;
+    this.player = revivePlayer(this.main, w.player);
     this.me = w.you;
     this.paint = w.you.paint;
     this.token = w.token;
@@ -95,6 +102,38 @@ export class NetSession implements GameSession {
     };
   }
 
+  get world(): World {
+    return this.arena ?? this.main;
+  }
+
+  hearth(): HearthView | null {
+    return this.arena ? this.view ?? { phase: 'fight', vents: 4, open: false, pulseIn: 99, wave: this.arena.h, t: 0 } : null;
+  }
+
+  /** Follow the rig into our own copy of the arena. */
+  private goIn(): void {
+    if (this.arena) return;
+    const r = this.player.rig;
+    this.back = { x: r.x, y: r.y };
+    this.arena = arenaFor(this.main);
+    this.view = null;
+    this.pending = [];
+    this.offset.x = this.offset.y = 0;
+    moveIn(this.player, this.arena);
+    this.emit([{ t: 'hearth-enter' }]);
+  }
+
+  /** Back to the dig site, at the gate. If the rig is really somewhere else (recalled, a new rig), the server's next snapshot moves it. */
+  private goOut(): void {
+    if (!this.arena) return;
+    leaveHearth(this.back, this.player);
+    this.arena = null;
+    this.view = null;
+    this.pending = [];
+    this.offset.x = this.offset.y = 0;
+    this.emit([{ t: 'hearth-leave' }]);
+  }
+
   on(fn: Listener): void {
     this.listeners.push(fn);
   }
@@ -105,8 +144,9 @@ export class NetSession implements GameSession {
 
   update(dt: number): void {
     if (this.closed) return;
-    this.world.time = (Date.now() + this.clockSkew) / 1000;
-    this.world.rescue = this.count > 1;
+    this.main.time = (Date.now() + this.clockSkew) / 1000;
+    this.main.rescue = this.count > 1;
+    if (this.arena) this.arena.time = this.main.time;
     this.acc = Math.min(this.acc + dt, 0.25);
     const ev: SimEvent[] = [];
     while (this.acc >= STEP) {
@@ -158,17 +198,24 @@ export class NetSession implements GameSession {
         break;
       case 'me': {
         const p = m.player;
-        Object.assign(this.player, { name: p.name, cash: p.cash, upgrades: p.upgrades, items: p.items, stats: p.stats, seen: p.seen });
+        // Recorders we've just touched may not have reached the server's copy yet: keep them.
+        const logs = [...new Set([...(p.logs ?? []), ...this.player.logs])];
+        Object.assign(this.player, { name: p.name, cash: p.cash, upgrades: p.upgrades, items: p.items, stats: p.stats, seen: p.seen, logs, prestige: p.prestige ?? 0 });
         break;
       }
       case 'res': {
         const act = this.acts.get(m.id);
         this.acts.delete(m.id);
+        // The server didn't let us through the gate after all: step back out.
+        if (act?.a === 'enter' && !m.res.ok) this.goOut();
         if (act && !m.res.ok) this.emit([{ t: 'refused', act, res: m.res }]);
         break;
       }
       case 'tiles': {
-        const w = this.world;
+        // Changes are for the dig site, or (with h) for our Hearth arena.
+        const w = m.h ? this.arena : this.main;
+        if (!w) break;
+        const shown = w === this.world;
         const out: SessionEvent[] = [];
         let touched: Set<number> | null = null;
         for (let k = 0; k + 1 < m.d.length; k += 2) {
@@ -181,10 +228,10 @@ export class NetSession implements GameSession {
           const x = i % w.w;
           const y = Math.floor(i / w.w);
           w.set(x, y, t);
-          if (t === T.AIR) out.push({ t: 'peer-dug', x, y, tile: old });
+          if (t === T.AIR && shown) out.push({ t: 'peer-dug', x, y, tile: old });
         }
         // The server has the last word on these tiles, so stop treating them as ours.
-        if (touched) this.pending = this.pending.filter((p) => !touched!.has(p.i));
+        if (touched && shown) this.pending = this.pending.filter((p) => !touched!.has(p.i));
         this.emit(out);
         break;
       }
@@ -215,7 +262,23 @@ export class NetSession implements GameSession {
         if (p) this.emit([{ t: 'peer-leave', name: p.name }]);
         break;
       }
+      case 'hearth':
+        if (m.state === 'in') this.goIn();
+        else this.goOut();
+        break;
+      case 'hearth-won': {
+        const mine = m.id === this.me.id;
+        if (mine) {
+          this.me.stars = m.stars;
+          this.player.prestige = m.stars;
+          this.goOut();
+        }
+        this.emit([{ t: 'hearth-won', name: m.name, time: m.time, stars: m.stars, mine }]);
+        break;
+      }
       case 'fx':
+        // What the dig site does is out of sight from inside the Hearth.
+        if (this.arena) break;
         if (m.e.t === 'blast') this.emit([{ t: 'peer-blast', x: m.e.x, y: m.e.y, r: m.e.r }]);
         else if (m.e.t === 'wrecked') {
           // Someone's rig was lost. We can only show it if we know where they are.
@@ -245,7 +308,7 @@ export class NetSession implements GameSession {
         break;
       }
       case 'market':
-        this.world.market = reviveMarket(m.m);
+        this.main.market = reviveMarket(m.m);
         this.emit([{ t: 'market' }]);
         break;
       case 'find':
@@ -266,6 +329,10 @@ export class NetSession implements GameSession {
   }
 
   private reconcile(ack: number, m: Extract<ServerMsg, { t: 'snap' }>): void {
+    // A snapshot from the other side of the gate (sent before the server caught up with us, or the
+    // other way round) has the rig in the wrong world: skip it.
+    if (!!m.h !== !!this.arena) return;
+    this.view = m.h ?? null;
     const r = this.player.rig;
     const before = { x: r.x + this.offset.x, y: r.y + this.offset.y };
     while (this.unacked.length && this.unacked[0][0] <= ack) this.unacked.shift();
@@ -282,6 +349,9 @@ export class NetSession implements GameSession {
     this.player.stats = m.stats;
     const scratch: SimEvent[] = [];
     for (const [s, b] of this.unacked) this.stepLocal(s, b, scratch);
+    // A recorder first touched during a replay (after a correction) still counts as found.
+    const logs = scratch.filter((e) => e.t === 'log');
+    if (logs.length) this.emit(logs);
     this.offset.x = before.x - r.x;
     this.offset.y = before.y - r.y;
     // Big jumps (a respawn, a recall beacon) shouldn't glide across the map.
@@ -301,6 +371,20 @@ export class NetSession implements GameSession {
       this.send(a);
       return { ok: true };
     }
+    if (a.a === 'enter') {
+      if (this.arena || !atGate(this.main, this.player)) return { ok: false, why: 'where' };
+      this.send(a);
+      this.goIn();
+      return { ok: true };
+    }
+    if (a.a === 'leave') {
+      // The server takes the rig out and tells us ('hearth' out).
+      if (!this.arena || !atExit({ phase: this.view?.phase ?? 'fight', world: this.arena }, this.player)) return { ok: false, why: 'where' };
+      this.send(a);
+      return { ok: true };
+    }
+    // A new rig after a wreck in the Hearth comes out in the dig site.
+    if (a.a === 'respawn' && this.arena && this.player.rig.wrecked) this.goOut();
     const ev: SimEvent[] = [];
     const res = applyAction(this.player, this.world, a, ev);
     if (res.ok) this.send(a);
@@ -323,6 +407,8 @@ export class NetSession implements GameSession {
   }
 
   peers(): Iterable<Peer> {
+    // Nobody else is in our Hearth.
+    if (this.arena) return [];
     return [...this.peerMap.values()].filter((p) => p.visible);
   }
 
@@ -336,6 +422,7 @@ export class NetSession implements GameSession {
 
   mapPeers(): MapPeer[] {
     const out: MapPeer[] = [];
+    if (this.arena) return out;
     for (const p of this.peerMap.values()) {
       const d = this.dots.get(p.id);
       // Close by, the smoothed position is better; further away, the map message is all we have.
@@ -402,8 +489,9 @@ export class NetSession implements GameSession {
     if (old) {
       old.name = p.name;
       old.paint = p.paint;
+      old.stars = p.stars ?? 0;
       return;
     }
-    this.peerMap.set(p.id, { ...p, x: 0, y: 0, tx: 0, ty: 0, facing: 1, mode: 0, flags: 0, visible: false });
+    this.peerMap.set(p.id, { ...p, stars: p.stars ?? 0, x: 0, y: 0, tx: 0, ty: 0, facing: 1, mode: 0, flags: 0, visible: false });
   }
 }

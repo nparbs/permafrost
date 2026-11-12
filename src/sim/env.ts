@@ -159,7 +159,8 @@ export class Environment {
     if (best > 0) this.jobs.push({ at: this.clock + ENV.pour, i: y * w.w + x, kind: 'pour', level: best - 1 });
   }
 
-  private checkLoose(x: number, y: number): void {
+  /** Start a loose tile wobbling if nothing holds it up. The Hearth uses this to drop ice it has just hung. */
+  checkLoose(x: number, y: number): void {
     const w = this.world;
     if (!isLoose(w.get(x, y)) || isSolid(w.get(x, y + 1))) return;
     const i = y * w.w + x;

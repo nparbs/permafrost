@@ -1,19 +1,30 @@
 # Handoff
 
-Last updated 2026-11-11 (v0.4 "Friendly rivalry" is built and committed on the local branch `v0.4`: market, daily bounty, find announcements, leaderboards and season rollover. It is not merged, pushed or shipped. Live is still v0.3.4). Read ROADMAP.md for the plan and the decisions the user has made, and CLAUDE.md for the working rules.
+Last updated 2026-11-11 (v0.5 "The Halvorsen story and the Hearth" and v0.4 "Friendly rivalry" shipped together on 2026-11-11. Live is v0.5.0). Read ROADMAP.md for the plan and the decisions the user has made, and CLAUDE.md for the working rules.
 
 ## Where things stand
 
-- **v0.4 is built, not shipped.** Branch `v0.4`, package version 0.4.0, `PROTOCOL_VERSION` 5. See the v0.4 section of ROADMAP.md for what it does. The details:
+- **v0.5 is live** at https://permafrost.parbs.online (shipped 2026-11-11 with v0.4). See the v0.5 section of ROADMAP.md for what it does. The details:
+  - Story: `src/sim/story.ts` has `LOGS` (20), `RADIO_DEPTH`, `RADIO_LOGS` and `CREDITS`. `World.placeLogs` picks each recorder's tile from the seed (three are fixed on the tunnel route). `T.LOG` isn't solid; `collectLogs` in `rig.ts` adds its id to `player.logs` when the rig is within 0.2 tiles and emits `log`. Old saves can't delete a recorder, the gate or a pad (`applyDiffs` skips them).
+  - Radio lines are said by the page: `main.ts` watches `stats.deepest` cross each `RADIO_DEPTH` line, and the recorder count after each `log` event. Nothing is stored, so a line is only said if the page sees the crossing.
+  - The Hollow: `World.builtAt` makes the straight tunnel (`SHAFT`), the antechamber (`ANTE`) with `T.GATE`, and the halls (`RUINS`). `world.shaftX` is the tunnel's left column.
+  - The Hearth: `new World(seed, ARENA.w, 'hearth')` is the arena (layout in `ARENA` in `world.ts`). `hearth.ts` has `enterHearth`, `hearthStep`, `leaveHearth` and `winHearth`, and `HearthRun` holds the fight. Vents are `T.HVENT` tiles that only a blast clears; the heart is `T.HCORE` until the vents are gone, then `T.HEART`. Ice is a real `T.SLAB` hung in the air and handed to the arena's own `Environment`.
+  - Who runs it: offline, `LocalSession` (its `world` getter returns the arena while `run` is set). Online, only the server: `Client.hearth`, `Game.apply` (the gate, and anything that takes a rig out), `Game.tickHearth` and `Game.won`. A rig in the arena is left out of `rigs`, `map`, the shared environment and shared effects. The page keeps its own copy of the arena to predict the rig (`NetSession.arena`), gets arena tiles as `tiles` with `h: 1`, the fight's state as `h` on each snapshot, and `hearth` in/out messages. A snapshot from the other side of the gate is skipped.
+  - The scene is restarted whenever `session.world` changes (`reshow()` in `main.ts`, on `hearth-enter`, `hearth-leave` and a win). `GameScene.syncHearth` draws the frost and the heat front.
+  - Prestige: `accounts.prestige` on the server (added on start-up), copied onto the player at hello; `player.prestige` in the offline save. `starBonus` in `market.ts` is the sale perk.
+  - Checked: 105 tests (`tests/hearth.test.ts` is new), typecheck, `npm run hearthcheck` (24 checks, desktop and phone), `seasoncheck`, `mp`, `uicheck`, `soscheck`, `cinecheck` and `gfxcheck` against a local build. The Hearth was never played in a browser online (the server-side fight is covered by tests only), and nobody has played any of it by hand.
+  - Open: see the "Not built" and "Not decided" lines in ROADMAP.md.
+
+- **v0.4 is live** (shipped 2026-11-11 with v0.5). The details:
   - Market: `src/sim/market.ts`. `world.market` is `Record<key, { g, at }>` (glut in units as of the last sale, in wall-clock seconds), or null offline. `priceOf(world, mineral)` is the one place a price comes from; `saleLines`, `sellAll` and `cargoValue` now take the world. `sellAll` records the sale when `world.market` exists. The server sends the market in the welcome and broadcasts `market` after every sale; the page predicts its own sale, then takes the server's copy. The numbers are in `MARKET`, `glutScale` and `BOUNTY_BONUS`.
   - Bounty: `bountyOf(seed, time)` hashes the seed and the UTC day. No messages. `main.ts` toasts it once per session and when it changes.
   - Finds: `Game.found` runs on every `pickup` event in the tick. It keeps `firsts` (one per mineral per season) and broadcasts `find` for a first, a relic or a Heartshard.
   - Leaderboards: `server/boards.ts` ranks `Entry` lists. `Game.entries()` reads every saved player of the season (`Store.seasonPlayers`) and overlays the live stats of those online. A page asks with `boards` (answered at most once a second per client, recomputed at most every 3 s). UI: `openBoards`, `boardsPanel` and `boardTable` in `ui.ts`; L opens and closes it.
   - Seasons: `worlds.started` is the season's start, and `Game.ends` is `started + seasonMs` (`SEASON_DAYS` env, 28 by default). `Game.tick` checks once a second and calls `rollover()`: save, write the final boards and every miner's ranks to the `seasons` table, send everyone `error` with code `season` and drop them, `Store.rollWorld` (new seed, season + 1, no diffs, day clock and `extra` cleared), then `Game.open` loads the new world. Players' rows keep the old season number, so `loadPlayer` returns nothing and they start over. The page reconnects by itself. `recapFor` puts a `recap` in the welcome while the account's saved row is still from the season before; the row is rewritten on the first save, so it shows once. `main.ts` opens it after the arrival scene (`ui.showRecap`).
   - Storage: `worlds.extra` (JSON: market and firsts) and the `seasons` table are added on start-up. The live database needs no manual step.
-  - The live world was created on 2026-11-09, so season 1 ends on 2026-12-07 once this ships. `/health` reports `seasonEnds`.
+  - The live world was created on 2026-11-09, so season 1 ends on 2026-12-07. `/health` reports `seasonEnds`.
   - Checked: 86 tests, typecheck, `npm run seasoncheck` (Standings on desktop and phone, Assay Office tags, a real rollover with two browsers, the summary screen), and `mp`, `uicheck`, `soscheck`, `cinecheck` and `gfxcheck` against a local v0.4 server. Not checked on a real phone, and nobody has sold into the market with real players.
-  - Open: towing and trading are not built. The market numbers and the bounty pool are guesses to tune. The user hasn't seen any of this yet.
+  - Open: towing and trading are not built. The market numbers and the bounty pool are guesses to tune.
 
 - **v0.3.4 is live** at https://permafrost.parbs.online (shipped 2026-11-11). See the v0.3.4 section of ROADMAP.md. The details:
   - Graphics: `src/game/gfx.ts` holds the setting (`permafrost.gfx` in localStorage, high by default). `makeTextures(scene, high)` builds a second tileset and rig set (`tiles-hd`, `righd0..5`) the first time High is used; painters check the `HD` flag, and `tilesKey()`/`rigKey()` pick the art in use. In `GameScene`, everything extra sits behind `this.high`: the `glow` RenderTexture (ADD blend, above the dark) for coloured light, the halo, shadow, exhaust, glints, sun and moon, and a camera vignette. Switching restarts the scene with the same session; the scene only subscribes to a session once (`heard`). Low must stay as it is, and High must not show more of the dark than Low.
@@ -80,13 +91,14 @@ npm run mp       # two headless browsers (URL=http://localhost:PORT/ if not 5173
 npm run shots    # screenshots (desktop, phone)
 npm run uicheck  # phone panel scrolling, stall panel, minimap and map (URL=... like mp)
 npm run seasoncheck  # builds, starts its own server on :8797 with a 75-second season, and checks v0.4
+npm run hearthcheck  # builds, starts its own server on :8798, and plays v0.5 offline: recorder, gate, fight, climb, credits
 ```
 
 If port 8791 is already taken by an old local server, build with `npx vite build` and run `PORT=8795 DB_FILE=... node dist-server/index.mjs`, which serves the page too, then point `URL=http://localhost:8795/` at it.
 
 ## Next steps
 
-- **Now:** show the user v0.4, then merge `v0.4` into main and `npm run ship` when they ask. Shipping bumps the protocol, so open pages are told to refresh. After that: tow cable and trading (the two v0.4 items left), or v0.5 (the Halvorsen story and the Hearth).
+- **Now:** v0.4 and v0.5 are live. Ask the user how the Hearth plays (nobody has played it by hand) and tune it. Next on the roadmap: v0.6 private rooms, or the two v0.4 items left (tow cable, trading). The live season 1 ends on 2026-12-07 and rolls over by itself.
 
 Older notes:
 
@@ -94,7 +106,7 @@ Older notes:
 1. **v0.3 is shipped.** The public world kept its seed and diffs, so tunnels dug before v0.3 start their refreeze clocks from the deploy. Nobody has played v0.3 online with real players yet, so watch for feedback on the tuning items in step 5.
 2. **v0.2 is done.** The repo went public on 2026-11-09. The VM runs `~/permafrost` with `~/deploy-permafrost.sh`, and the PC's `~/.ssh/permafrost-deploy` key plus `.deploy.local.json` (git-ignored) drive `npm run ship`. The first ship passed every check: the page and assets load through Cloudflare, `/ws` opens from the real origin, and other origins are refused. Nightly backups: `~/backup-permafrost.sh` runs from cron at 04:30 into `~/permafrost-backups` and keeps 14 days, set up by `deb-soft-haven` and the same as TPT's.
 3. **Public map width:** the server uses 240 (`PUBLIC_WIDTH` in `server/game.ts`). The user never confirmed the expected player count, so 240 and 4-week seasons are defaults. Season rollover is written (v0.4) and needs to ship before 2026-12-07, when the live season 1 ends.
-4. **v0.4** is built on branch `v0.4` (see the top of this file).
+4. **v0.4 and v0.5** are live (see the top of this file).
 5. **Tuning to watch once v0.3 is live:** refreeze times (`ENV.refreeze`), rockfall damage, blizzard frequency (`BLIZZARD.chance`), and how dark the glacier is with the stock lamp (`darkness()` in `GameScene.ts`).
 
 ## Known limits and notes

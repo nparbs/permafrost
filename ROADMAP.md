@@ -139,7 +139,7 @@ Day and night, in both settings:
 - [x] It's looks only: temperature, fuel and the dark underground are the same by day and by night
 - [ ] Not decided: whether night should do anything (colder surface, pricier fuel, better aurora-lit finds)
 
-## v0.4: Friendly rivalry (built 2026-11-11 on branch `v0.4`, not shipped yet)
+## v0.4: Friendly rivalry (live since 2026-11-11, shipped together with v0.5)
 
 - [x] Live ore market (online only): every unit sold adds to that ore's glut, which pushes its price down for everyone, to 45% of list at worst. The glut halves every 20 minutes. Common ores take more to flood than rare ones, and relics always pay in full. The Assay Office tags each price: "▼ 71%" just after a sale, "▲ 87%" while it climbs back (`src/sim/market.ts`). Offline, ore sells at list price
 - [x] Daily bounty: the Combine pays 50% extra for one ore or gem each day, online and offline. It changes at midnight UTC and comes from the seed and the date, so nothing is sent. The Assay Office shows it, and the assayer announces it. An ore you haven't dug up yet shows as "???"
@@ -154,15 +154,21 @@ Day and night, in both settings:
 - [ ] Not built: only the last season's boards can be looked at. Older ones are kept in the database (`seasons` table) but have no screen. Nothing cosmetic is carried over yet, because cosmetics, titles and prestige stars don't exist until v0.5 and v0.7
 - [ ] Not decided: the market's numbers (45% floor, 20-minute half-life), the size of the bounty, and whether the bounty should only pick ores the season's miners can reach
 
-## v0.5: The Halvorsen story and the Hearth
+## v0.5: The Halvorsen story and the Hearth (live since 2026-11-11) ✅
 
-- [ ] About 20 recorder logs and caches, placed by depth and read at the Comms Tower
-- [ ] Radio lines from the three station characters, tied to depth records and story beats
-- [ ] The Hollow: ruins, the straight tunnel, and Hearth machinery
-- [ ] The Hearth: charges on its heat vents, freezing pulses, falling ice and a weak-point phase, with no weapons
-- [ ] The escape: the Hollow collapses and a heat wave chases you to the surface
-- [ ] Credits over the thaw, then prestige: a restart with a star, a title and a small permanent perk
-- [ ] Online, each player's Hearth is their own instance, so nobody "uses up" the ending
+- [x] 20 Halvorsen recorders, placed by depth from 40 m down to the Hearth's door (`src/sim/story.ts`). A recorder is a tile that isn't solid: a rig that touches it has the log, and it stays there for the next miner, so nobody can use one up. It blinks red in the dark
+- [x] The Comms Tower, a sixth station building past the Supply Store (the other five didn't move). It plays back the recorders you've found and lists the signals of the three shallowest you haven't: depth, and how far left or right of the tower
+- [x] Radio lines from the fuel-depot attendant, the assayer and the mechanic: nine tied to how deep you've been, five to how many recorders you've found, and a few in the finale. They start as dry comic relief and work out what the Combine is paying for
+- [x] The Hollow: halls of cut stone with pillars (about one in six has a Hollow Relic on the floor), and the straight tunnel, two tiles wide, from 1,725 m down to an antechamber at the bottom with the Hearth's gate in it. Three recorders sit on that route
+- [x] The Hearth (`src/sim/hearth.ts`). No weapons. Break four heat vents with charges, then the heart, from on top of the machine. It sends a freezing pulse every 8 seconds (5.5 once the heart is exposed) with a warning first: a rig on the ground loses 30 hull, a rig in the air loses nothing. Ice comes off the roof near the rig. It takes five charges, and the gate says how many you carry
+- [x] The escape: when the heart breaks, the way out shuts, thin ice plugs the shaft, rubble falls, and a wall of heat climbs behind you at 82% of your own top climbing speed. Reach the surface to win
+- [x] Credits over a warm sky, then prestige: a star, a new stock rig, no cash, items or upgrades. Stats, the price list and the recorders are kept. Each star adds 5% to every sale, up to five stars. Stars show on your name tag, and they belong to the account, so they outlast a season
+- [x] Each miner's Hearth is their own. Going through the gate moves the rig into a private arena: other miners can't see it, and nothing in it touches the shared map. You can come back out through the gate until the heart breaks, a Recall Beacon works until then too, and a rig lost inside costs the ore on board, as anywhere
+- [x] Everyone hears when a miner breaks the Hearth, and Standings has a Fastest Hearth board (gate to surface)
+- [x] `PROTOCOL_VERSION` is 6. `npm run hearthcheck` plays the whole thing offline in headless Chrome
+- [ ] Not built: a title to go with the star, and anything to show for stars beyond the name tag
+- [ ] Not decided: the fight's numbers (pulse damage and timing, how fast the heat climbs), whether dying in the Hearth should put you back at the gate, and whether prestige should keep anything more
+- [ ] Known: the generated map changed (tunnel, halls, recorders, the tower's pad), so the live world's untouched ground shifted a little when this shipped. Dug tunnels were kept
 
 ## v0.6: Private rooms
 

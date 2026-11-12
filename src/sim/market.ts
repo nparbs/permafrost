@@ -95,3 +95,10 @@ export function priceOf(world: World, m: Mineral): number {
   const bonus = bountyOf(world.seed, world.time).key === m.key ? BOUNTY_BONUS : 1;
   return Math.max(1, Math.round(m.value * marketFactor(world.market, m, world.time) * bonus));
 }
+
+/** Each prestige star adds this share to a sale, up to STAR_MAX stars. */
+export const STAR_SHARE = 0.05;
+export const STAR_MAX = 5;
+
+/** The extra a miner with prestige stars gets on a sale worth `subtotal`. */
+export const starBonus = (stars: number, subtotal: number) => Math.round(subtotal * STAR_SHARE * Math.max(0, Math.min(STAR_MAX, stars | 0)));

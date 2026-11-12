@@ -9,6 +9,8 @@ export interface Account {
   id: string;
   name: string;
   paint: number;
+  /** Prestige stars. They belong to the account, so they outlast a season. */
+  prestige: number;
 }
 
 export interface WorldRow {
@@ -108,6 +110,9 @@ export class Store {
     // Added in v0.3.4. A world from before starts its day count at zero.
     const cols = this.db.prepare('PRAGMA table_info(worlds)').all() as { name: string }[];
     if (!cols.some((c) => c.name === 'played')) this.db.exec('ALTER TABLE worlds ADD COLUMN played INTEGER NOT NULL DEFAULT 0');
+    // Added in v0.5.
+    const acols = this.db.prepare('PRAGMA table_info(accounts)').all() as { name: string }[];
+    if (!acols.some((c) => c.name === 'prestige')) this.db.exec('ALTER TABLE accounts ADD COLUMN prestige INTEGER NOT NULL DEFAULT 0');
     // Added in v0.4.
     if (!cols.some((c) => c.name === 'extra')) this.db.exec('ALTER TABLE worlds ADD COLUMN extra TEXT');
   }
@@ -117,14 +122,18 @@ export class Store {
     const id = randomBytes(5).toString('hex');
     const now = Date.now();
     this.db.prepare('INSERT INTO accounts (id, token_hash, name, paint, created, seen) VALUES (?, ?, ?, ?, ?, ?)').run(id, hash(token), name, paint, now, now);
-    return { account: { id, name, paint }, token };
+    return { account: { id, name, paint, prestige: 0 }, token };
   }
 
   byToken(token: string): Account | null {
-    const row = this.db.prepare('SELECT id, name, paint FROM accounts WHERE token_hash = ?').get(hash(token)) as Account | undefined;
+    const row = this.db.prepare('SELECT id, name, paint, prestige FROM accounts WHERE token_hash = ?').get(hash(token)) as Account | undefined;
     if (!row) return null;
     this.db.prepare('UPDATE accounts SET seen = ? WHERE id = ?').run(Date.now(), row.id);
     return { ...row };
+  }
+
+  setPrestige(id: string, prestige: number): void {
+    this.db.prepare('UPDATE accounts SET prestige = ? WHERE id = ?').run(prestige, id);
   }
 
   profile(id: string, name: string, paint: number): void {

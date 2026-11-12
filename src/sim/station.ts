@@ -3,7 +3,7 @@
 
 import { ITEMS, ITEM_STACK, type ItemKey } from './items';
 import { RIG_H, cargoCount, placeRig, statsOf, type Player } from './player';
-import { onMarket, priceOf, recordSale } from './market';
+import { onMarket, priceOf, recordSale, starBonus } from './market';
 import { MINERALS, MINERAL_INDEX } from './tiles';
 import { UPGRADES, type UpgradeKey } from './upgrades';
 import { SKY, type Building, type World } from './world';
@@ -46,7 +46,8 @@ export function saleLines(p: Player, world: World): SaleLine[] {
 /** Sell the whole cargo at the price each ore has right now. Online, the sale then pushes those prices down. */
 export function sellAll(p: Player, world: World): { lines: SaleLine[]; total: number } {
   const lines = saleLines(p, world);
-  const total = lines.reduce((s, l) => s + l.total, 0);
+  const sub = lines.reduce((s, l) => s + l.total, 0);
+  const total = sub + starBonus(p.prestige, sub);
   if (total > 0) {
     p.cash += total;
     p.stats.earned += total;

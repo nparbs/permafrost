@@ -1,12 +1,13 @@
 // Messages between the page and the server. Both sides import this file.
 
 import type { Action, ActResult } from '../sim/actions';
+import type { HearthView } from '../sim/hearth';
 import type { Market } from '../sim/market';
 import type { Player, PlayerStats, Rig } from '../sim/player';
 import type { Input, SimEvent } from '../sim/rig';
 
 /** Bump when old pages can't talk to a new server. They're told to refresh. */
-export const PROTOCOL_VERSION = 5;
+export const PROTOCOL_VERSION = 6;
 
 export const packInput = (i: Input): number => (i.left ? 1 : 0) | (i.right ? 2 : 0) | (i.up ? 4 : 0) | (i.down ? 8 : 0);
 export const unpackInput = (b: number): Input => ({ left: (b & 1) > 0, right: (b & 2) > 0, up: (b & 4) > 0, down: (b & 8) > 0 });
@@ -19,6 +20,8 @@ export interface PeerInfo {
   id: string;
   name: string;
   paint: number;
+  /** Prestige stars: times this miner has broken the Hearth. */
+  stars?: number;
 }
 
 export const RigMode = { Idle: 0, Moving: 1, DrillSide: 2, DrillDown: 3 } as const;
@@ -53,7 +56,8 @@ export interface WorldInfo {
   diffs: string;
 }
 
-export const BOARD_KEYS = ['deepest', 'earned', 'relics', 'rescues'] as const;
+/** 'hearth' is the fastest Hearth in seconds: the only board where a lower number is better. */
+export const BOARD_KEYS = ['deepest', 'earned', 'relics', 'rescues', 'hearth'] as const;
 export type BoardKey = (typeof BOARD_KEYS)[number];
 
 export interface BoardRow {
@@ -110,12 +114,17 @@ export type ServerMsg =
   /** `now` is the server's clock in ms, so weather and steam vents line up. */
   | { t: 'welcome'; v: number; token: string; you: PeerInfo; world: WorldInfo; player: Player; peers: PeerInfo[]; online: number; now: number; recap?: Recap }
   /** Your rig as the server has it after input `ack`. Items are here because an empty tank burns a Fuel Cell. */
-  | { t: 'snap'; ack: number; rig: Rig; cargo: Record<string, number>; items: Player['items']; stats: PlayerStats }
+  /** `h` is there while your rig is in the Hearth arena: the state of the fight. */
+  | { t: 'snap'; ack: number; rig: Rig; cargo: Record<string, number>; items: Player['items']; stats: PlayerStats; h?: HearthView }
   /** Your full state, after anything changes your cash, upgrades or items. */
   | { t: 'me'; player: Player }
   | { t: 'res'; id: number; res: ActResult }
-  /** Tile changes as flat pairs: [index, tile, index, tile, ...]. */
-  | { t: 'tiles'; d: number[] }
+  /** Tile changes as flat pairs: [index, tile, index, tile, ...]. With `h`, they are in your Hearth arena, not the dig site. */
+  | { t: 'tiles'; d: number[]; h?: 1 }
+  /** Your rig went into the Hearth arena ('in') or came back to the dig site ('out'). */
+  | { t: 'hearth'; state: 'in' | 'out' }
+  /** A miner broke the Hearth and reached the surface in `time` seconds. They now have `stars` prestige stars. */
+  | { t: 'hearth-won'; id: string; name: string; time: number; stars: number }
   | { t: 'rigs'; r: RigView[]; online: number }
   | { t: 'peer'; p: PeerInfo }
   | { t: 'leave'; id: string }

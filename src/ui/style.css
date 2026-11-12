@@ -1268,3 +1268,133 @@ table.sale tr.me td {
   color: var(--gold);
   font-weight: 400;
 }
+
+/* ---- v0.5: the Comms Tower, the Hearth, radio lines and the credits ---- */
+.toast.radio {
+  border-left: 3px solid var(--ice);
+  color: var(--text);
+  text-align: left;
+}
+.toast.radio b {
+  color: var(--ice);
+  font-weight: 400;
+}
+.logs {
+  display: grid;
+  gap: 4px;
+}
+.log .log-h {
+  width: 100%;
+  padding: 6px 8px;
+  font-size: 11px;
+  text-align: left;
+}
+.log.open .log-h {
+  border-color: var(--ice);
+}
+.log-text {
+  margin: 0;
+  padding: 8px 10px;
+  font-family: ui-monospace, 'Cascadia Mono', Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.55;
+  color: #d8e6f4;
+  background: #08111e;
+  border: 1px solid #1e3550;
+  border-top: 0;
+  border-radius: 0 0 4px 4px;
+  user-select: text;
+  -webkit-user-select: text;
+}
+.sig-h {
+  font-size: 11px;
+  color: var(--ice);
+  letter-spacing: 1px;
+}
+.warn-line {
+  color: var(--warn);
+}
+.hearth-hud {
+  position: absolute;
+  top: max(8px, env(safe-area-inset-top));
+  left: 50%;
+  transform: translateX(-50%);
+  display: none;
+  padding: 4px 10px;
+  font-size: 11px;
+  letter-spacing: 1px;
+  color: #ffd8ee;
+  background: rgba(20, 8, 20, 0.8);
+  border: 1px solid #ff4fa8;
+  border-radius: 4px;
+  white-space: nowrap;
+  pointer-events: none;
+}
+.hearth-hud.show {
+  display: block;
+}
+.hearth-hud.warn {
+  color: #08131f;
+  background: var(--ice);
+  border-color: #fff;
+  animation: hearth-blink 0.3s steps(2) infinite;
+}
+@keyframes hearth-blink {
+  50% {
+    opacity: 0.55;
+  }
+}
+#ui.cine .hearth-hud {
+  display: none;
+}
+.credits {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 16px;
+  box-sizing: border-box;
+  overflow: hidden;
+  background: linear-gradient(rgba(255, 196, 120, 0.25), rgba(8, 12, 24, 0.9) 55%);
+  pointer-events: auto;
+  z-index: 30;
+}
+.credits.hidden {
+  display: none;
+}
+.credits .roll {
+  position: absolute;
+  left: 50%;
+  bottom: 0;
+  width: min(520px, 88%);
+  text-align: center;
+  transform: translate(-50%, 100%);
+  animation: credits-roll 46s linear forwards;
+}
+.credits .roll p {
+  margin: 0 0 26px;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--text);
+  text-shadow: 0 2px 0 #000;
+}
+.credits .roll p.big {
+  font-size: 30px;
+  letter-spacing: 6px;
+  color: var(--ice);
+}
+.credits .roll p.foot {
+  color: var(--gold);
+}
+@keyframes credits-roll {
+  to {
+    transform: translate(-50%, -110vh);
+  }
+}
+.credits .btn {
+  position: relative;
+  z-index: 1;
+}

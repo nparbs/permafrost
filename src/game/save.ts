@@ -28,9 +28,10 @@ export function hasSave(): boolean {
 export function saveSession(s: LocalSession): void {
   const p = s.player;
   const r = p.rig;
-  // Don't save half a dig: put the rig back where the dig started.
-  const player = r.drill ? { ...p, rig: { ...r, x: r.drill.sx, y: r.drill.sy, drill: null } } : p;
-  const data: SaveData = { v: 1, seed: s.world.seed, width: s.world.w, player, diffs: [...s.world.diffs], at: Date.now(), dayStart: s.world.dayStart };
+  const site = s.sitePos();
+  // Don't save half a dig: put the rig back where the dig started. A rig in the Hearth is saved at the gate.
+  const player = site ? { ...p, rig: { ...r, x: site.x, y: site.y, vx: 0, vy: 0, drill: null } } : r.drill ? { ...p, rig: { ...r, x: r.drill.sx, y: r.drill.sy, drill: null } } : p;
+  const data: SaveData = { v: 1, seed: s.main.seed, width: s.main.w, player, diffs: [...s.main.diffs], at: Date.now(), dayStart: s.main.dayStart };
   try {
     localStorage.setItem(KEY, JSON.stringify(data));
   } catch {

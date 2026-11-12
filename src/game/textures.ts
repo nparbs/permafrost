@@ -15,7 +15,12 @@ const EMB_GAS = MINERALS.length;
 const EMB_BOULDER = MINERALS.length + 1;
 /** Tiles with ids past the minerals: EXTRA_BASE + (vent 0-3, slag 4-7, water 8 + layer * 2 + (surface ? 0 : 1)). */
 const EXTRA_BASE = EMB_BASE + (MINERALS.length + 2) * 8;
-const TILE_COUNT = EXTRA_BASE + 8 + LAYERS.length * 2;
+/**
+ * What the Hollow's builders left (v0.5): BUILT_BASE + (cut stone 0-3, heat vent 4, Hearth body 5-8,
+ * heart 9, gate 10, recorder 11 + layer).
+ */
+const BUILT_BASE = EXTRA_BASE + 8 + LAYERS.length * 2;
+const TILE_COUNT = BUILT_BASE + 11 + LAYERS.length;
 /**
  * Rounded tunnel edges use a second grid, offset by half a tile, so each cell sits on a tile corner
  * and sees the four tiles that meet there: OVER_BASE + layer * 32 + (top two are sky ? 16 : 0) + open,
@@ -81,6 +86,9 @@ export function debrisColor(world: World, x: number, y: number, tile: number): n
   if (tile === T.MELT || tile === T.WATER) return 0x4a9ae0;
   if (tile === T.SLAG) return 0x3a3236;
   if (tile === T.VENT) return 0x8a8a90;
+  if (tile === T.CARVED) return 0x4b4872;
+  if (tile === T.HVENT || tile === T.HCORE) return 0x5a5a66;
+  if (tile === T.HEART) return 0xff4fa8;
   return rgbNum(LAYER_PAL[world.layerAt(x, y)].base);
 }
 
@@ -308,6 +316,100 @@ function paintSlag(px: Px, ox: number, oy: number, v: number) {
       px.set(ox + x, oy + y, c);
     }
   }
+}
+
+/** Cut stone: fitted blocks with a thin teal inlay. The walls of the tunnel and the halls. */
+function paintCarved(px: Px, ox: number, oy: number, v: number) {
+  const p = LAYER_PAL[6];
+  const face = shade(p.light, -0.12);
+  for (let y = 0; y < TS; y++) {
+    for (let x = 0; x < TS; x++) {
+      const row = Math.floor(y / 8);
+      const bx = (x + (row ? 4 : 0) + v * 3) % 16;
+      let c = mix(face, p.base, valueNoise((x + v * 16) / 3, y / 3, 1401) * 0.6);
+      if (y % 8 === 0 || bx === 0) c = p.dark;
+      else if (y % 8 === 1 || bx === 1) c = shade(face, 0.18);
+      px.set(ox + x, oy + y, c);
+    }
+  }
+  if (v % 2 === 0) for (let x = 4; x < 12; x++) px.set(ox + x, oy + 12, mix(p.accent, p.dark, x === 4 || x === 11 ? 0.6 : 0.25));
+}
+
+/** The body of the Hearth: dark plates, rivets and a seam that glows. */
+function paintCore(px: Px, ox: number, oy: number, v: number) {
+  const a = hex('#23232c');
+  const b = hex('#3c3c4a');
+  for (let y = 0; y < TS; y++) {
+    for (let x = 0; x < TS; x++) {
+      let c = mix(a, b, valueNoise((x + v * 16) / 5, y / 5, 1411) * 0.8);
+      if (x === 0 || y === 0) c = shade(b, 0.2);
+      if (x === TS - 1 || y === TS - 1) c = hex('#14141a');
+      px.set(ox + x, oy + y, c);
+    }
+  }
+  for (const [x, y] of [[2, 2], [13, 2], [2, 13], [13, 13]]) px.set(ox + x, oy + y, hex('#6a6a7a'));
+  const seam = hex('#ff4fa8');
+  if (v % 2 === 0) for (let x = 4; x < 12; x++) px.set(ox + x, oy + 8, mix(seam, a, 0.35 + Math.abs(x - 7.5) * 0.08));
+  else for (let y = 4; y < 12; y++) px.set(ox + 8, oy + y, mix(seam, a, 0.35 + Math.abs(y - 7.5) * 0.08));
+}
+
+/** A heat vent: a grate over a furnace mouth. */
+function paintHeatVent(px: Px, ox: number, oy: number) {
+  paintCore(px, ox, oy, 1);
+  const hot = hex('#ff8a30');
+  for (let y = 3; y < 13; y++) {
+    for (let x = 3; x < 13; x++) {
+      const r = Math.hypot(x - 7.5, y - 7.5);
+      if (r > 5) continue;
+      const c = mix(hex('#fff0b0'), hot, Math.min(1, r / 4));
+      px.set(ox + x, oy + y, x % 3 === 0 ? hex('#1a1a20') : c);
+    }
+  }
+  outline(px, ox + 2, oy + 2, 12, 12, hex('#7a7a8a'));
+}
+
+/** The heart: a pink crystal in a broken housing. */
+function paintHeart(px: Px, ox: number, oy: number) {
+  paintCore(px, ox, oy, 0);
+  const core = hex('#ff4fa8');
+  for (let y = 2; y < 14; y++) {
+    for (let x = 2; x < 14; x++) {
+      const r = Math.abs(x - 7.5) + Math.abs(y - 7.5);
+      if (r > 6) continue;
+      px.set(ox + x, oy + y, r < 2 ? hex('#fff0f8') : mix(hex('#ffd8ee'), core, Math.min(1, (r - 1) / 4)));
+    }
+  }
+}
+
+/** The gate: an arch of cut stone with a warm light in it, over the tunnel back. */
+function paintGate(px: Px, ox: number, oy: number) {
+  paintBack(px, ox, oy, 6, false, false);
+  const p = LAYER_PAL[6];
+  for (let y = 0; y < TS; y++) {
+    for (let x = 0; x < TS; x++) {
+      const k = 1 - Math.abs(x - 7.5) / 8;
+      px.set(ox + x, oy + y, mix(hex('#3a1630'), hex('#ff9ac8'), Math.max(0, k * 0.8 - (y % 4 === 0 ? 0.15 : 0))));
+    }
+  }
+  for (let y = 0; y < TS; y++) {
+    px.set(ox, oy + y, p.accent);
+    px.set(ox + TS - 1, oy + y, p.accent);
+  }
+}
+
+/** A Halvorsen recorder: an orange case with an aerial and a red light, sitting in a pocket. */
+function paintRecorder(px: Px, ox: number, oy: number, layer: number) {
+  paintBack(px, ox, oy, layer, true, false);
+  const orange = hex('#e0762a');
+  px.rect(ox + 4, oy + 8, 8, 7, orange);
+  px.rect(ox + 4, oy + 8, 8, 1, shade(orange, 0.3));
+  px.rect(ox + 4, oy + 14, 8, 1, shade(orange, -0.4));
+  px.rect(ox + 5, oy + 10, 4, 2, hex('#1b2232'));
+  px.set(ox + 10, oy + 10, hex('#ff3030'));
+  px.set(ox + 10, oy + 12, hex('#e8e8e8'));
+  px.rect(ox + 11, oy + 2, 1, 6, hex('#c8ccd4'));
+  px.set(ox + 11, oy + 1, hex('#ff3030'));
+  outline(px, ox + 3, oy + 7, 10, 9, hex('#20120a'));
 }
 
 function paintWater(px: Px, ox: number, oy: number, layer: number, surface: boolean) {
@@ -544,7 +646,13 @@ function buildTileset(): HTMLCanvasElement {
     paintMelt(px, ...at(T.MELT * 4 + v), v);
     paintVent(px, ...at(EXTRA_BASE + v), v);
     paintSlag(px, ...at(EXTRA_BASE + 4 + v), v);
+    paintCarved(px, ...at(BUILT_BASE + v), v);
+    paintCore(px, ...at(BUILT_BASE + 5 + v), v);
   }
+  paintHeatVent(px, ...at(BUILT_BASE + 4));
+  paintHeart(px, ...at(BUILT_BASE + 9));
+  paintGate(px, ...at(BUILT_BASE + 10));
+  for (let layer = 0; layer < LAYERS.length; layer++) paintRecorder(px, ...at(BUILT_BASE + 11 + layer), layer);
   for (let layer = 0; layer < LAYERS.length; layer++) {
     for (let f = 0; f < 4; f++) paintBack(px, ...at(BACK_BASE + layer * 4 + f), layer, (f & 1) > 0, (f & 2) > 0);
     for (let k = 0; k < MINERALS.length + 2; k++) paintEmbedded(px, ...at(EMB_BASE + k * 8 + layer), k, layer);
@@ -582,6 +690,12 @@ export function visIndex(world: World, x: number, y: number): number {
   if (t === T.VENT) return EXTRA_BASE + v;
   if (t === T.SLAG) return EXTRA_BASE + 4 + v;
   if (t === T.WATER) return EXTRA_BASE + 8 + world.layerAt(x, y) * 2 + (world.get(x, y - 1) === T.WATER ? 1 : 0);
+  if (t === T.CARVED) return BUILT_BASE + v;
+  if (t === T.HVENT) return BUILT_BASE + 4;
+  if (t === T.HCORE) return BUILT_BASE + 5 + v;
+  if (t === T.HEART) return BUILT_BASE + 9;
+  if (t === T.GATE) return BUILT_BASE + 10;
+  if (t === T.LOG) return BUILT_BASE + 11 + world.layerAt(x, y);
   if (t === T.GAS) return EMB_BASE + EMB_GAS * 8 + world.layerAt(x, y);
   if (t === T.BOULDER) return EMB_BASE + EMB_BOULDER * 8 + world.layerAt(x, y);
   return t * 4 + v;
@@ -903,6 +1017,39 @@ function paintBuilding(px: Px, key: BuildingKey) {
       });
       break;
     }
+    case 'comms': {
+      // A hut with a lattice mast and a dish.
+      const wall = hex('#4a5a78');
+      R(4, 24, 30, 24, wall);
+      R(4, 24, 30, 2, shade(wall, 0.25));
+      R(2, 20, 34, 4, hex('#27324a'));
+      snowCap(px, 2, 18, 34);
+      R(14, 34, 9, 14, hex('#1b2232'));
+      R(8, 28, 6, 5, lit);
+      R(25, 28, 6, 5, lit);
+      const steel = hex('#c8ccd4');
+      R(46, 2, 1, 46, steel);
+      R(54, 2, 1, 46, steel);
+      for (let y = 4; y < 46; y += 6) {
+        R(46, y, 9, 1, steel);
+        for (let i = 0; i < 6; i++) px.set(47 + i, y + 1 + i, shade(steel, -0.35));
+      }
+      R(49, 0, 3, 2, hex('#ff3030'));
+      // dish
+      for (let y = 0; y < 9; y++) {
+        const w = Math.round(Math.sqrt(Math.max(0, 16 - (y - 4) ** 2)));
+        R(40 - w, 8 + y, w, 1, shade(hex('#e8e8f0'), -y * 0.03));
+      }
+      R(40, 12, 6, 1, steel);
+      sign(12, 8, hex('#2b3b52'), () => {
+        R(11, 5, 2, 7, hex('#9fe8ff'));
+        px.set(9, 6, hex('#9fe8ff'));
+        px.set(14, 6, hex('#9fe8ff'));
+        px.set(8, 4, hex('#9fe8ff'));
+        px.set(15, 4, hex('#9fe8ff'));
+      });
+      break;
+    }
     case 'supply': {
       const wood = hex('#7a5232');
       R(4, 18, 40, 30, wood);
@@ -1203,7 +1350,7 @@ export function makeTextures(scene: Phaser.Scene, high = false): void {
   const flame = tx.addCanvas('flame', buildFlame())!;
   flame.add('f0', 0, 0, 0, 8, 8);
   flame.add('f1', 0, 8, 0, 8, 8);
-  for (const key of ['fuel', 'assay', 'shop', 'repair', 'supply'] as BuildingKey[]) tx.addCanvas(`b-${key}`, buildBuilding(key));
+  for (const key of ['fuel', 'assay', 'shop', 'repair', 'supply', 'comms'] as BuildingKey[]) tx.addCanvas(`b-${key}`, buildBuilding(key));
   tx.addCanvas('sky', buildSky());
   tx.addCanvas('sky-day', buildSky(SKY_DAY));
   tx.addCanvas('sky-dusk', buildSky(SKY_DUSK));
@@ -1220,6 +1367,8 @@ export function makeTextures(scene: Phaser.Scene, high = false): void {
   lifter.add('l0', 0, 0, 0, LIFTER_W, LIFTER_H);
   lifter.add('l1', 0, LIFTER_W, 0, LIFTER_W, LIFTER_H);
   tx.addCanvas('chute', buildChute());
+  // Added after the first release of the tileset: an older page's cached scene never sees it.
+  if (!tx.exists('b-comms')) tx.addCanvas('b-comms', buildBuilding('comms'));
   const boulders = tx.addCanvas('boulders', buildBoulders())!;
   for (let l = 0; l < LAYERS.length; l++) boulders.add(`b${l}`, 0, l * TS, 0, TS, TS);
 }

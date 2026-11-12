@@ -27,6 +27,18 @@ export const T = {
   VENT: 49,
   /** Magma that flowed into a tunnel and cooled. Diggable. */
   SLAG: 50,
+  /** A Halvorsen recorder. Not solid: a rig that touches it has the log, and it stays for the next miner. */
+  LOG: 51,
+  /** Cut stone: the walls of the straight tunnel and the halls of the Hollow. */
+  CARVED: 52,
+  /** The way into the Hearth (and, inside, the way back out). Not solid. */
+  GATE: 53,
+  /** One of the Hearth's heat vents. Only a charge breaks it. */
+  HVENT: 54,
+  /** The body of the Hearth. Nothing breaks it. */
+  HCORE: 55,
+  /** The Hearth's heart, once the vents are gone. One more charge. */
+  HEART: 56,
 } as const;
 
 /** Minerals take ids MINERAL_BASE + index into MINERALS. */
@@ -128,6 +140,12 @@ def(T.MELT, 'Meltwater pocket', true, true, 0.6);
 def(T.WATER, 'Meltwater', false, false, 0);
 def(T.VENT, 'Steam vent', true, false, 0);
 def(T.SLAG, 'Slag', true, true, 1.6);
+def(T.LOG, 'Recorder', false, false, 0);
+def(T.CARVED, 'Cut stone', true, true, 2.6);
+def(T.GATE, 'Hearth gate', false, false, 0);
+def(T.HVENT, 'Heat vent', true, false, 0);
+def(T.HCORE, 'The Hearth', true, false, 0);
+def(T.HEART, 'Heart of the Hearth', true, false, 0);
 MINERALS.forEach((m, i) => def(MINERAL_BASE + i, m.name, true, true, m.hardness, i));
 
 export function tileDef(t: number): TileDef {
@@ -137,6 +155,6 @@ export const isSolid = (t: number) => tileDef(t).solid;
 export const isMineral = (t: number) => t >= MINERAL_BASE && t < MINERAL_BASE + MINERALS.length;
 export const isDiggable = (t: number) => tileDef(t).diggable;
 /** Tiles a thermal charge can clear. */
-export const isBlastable = (t: number) => t === T.BOULDER || t === T.VENT || isDiggable(t);
+export const isBlastable = (t: number) => t === T.BOULDER || t === T.VENT || t === T.HVENT || t === T.HEART || isDiggable(t);
 /** Tiles that drop when nothing holds them up. */
 export const isLoose = (t: number) => t === T.BOULDER || t === T.SLAB;

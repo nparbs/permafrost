@@ -8,7 +8,8 @@ import { FLARE } from '../sim/items';
 import { rigDepth } from '../sim/rig';
 import { MINERALS, MINERAL_BASE, T, isDiggable, isMineral, isSolid, tileDef } from '../sim/tiles';
 import { blizzardAt, ventActive, windDir } from '../sim/weather';
-import { SKY } from '../sim/world';
+import { SKY, ARENA } from '../sim/world';
+import { HEARTH } from '../sim/hearth';
 import { quality } from './gfx';
 import type { GameSession, SessionEvent } from './session';
 import { LAYER_PAL, PAINTS, TS, backColor, debrisColor, frameFor, makeTextures, overIndex, rgbNum, rigKey, tileFrame, tilesKey, visIndex } from './textures';
@@ -143,6 +144,11 @@ export class GameScene extends Phaser.Scene {
   private stars2?: Phaser.GameObjects.TileSprite;
   private exhaustTimer = 0;
   private twinkleTimer = 0;
+  /** In the Hearth arena: the heat front that climbs the shaft, and the frost that runs through the floor before a pulse. */
+  private wave?: Phaser.GameObjects.Rectangle;
+  private waveEdge?: Phaser.GameObjects.Rectangle;
+  private frost?: Phaser.GameObjects.Rectangle;
+  private rubbleTimer = 0;
   /** The session this scene already listens to, so a restart for a settings change doesn't listen twice. */
   private heard?: GameSession;
 
@@ -211,6 +217,16 @@ export class GameScene extends Phaser.Scene {
     world.dirty.length = 0;
 
     this.bites = this.add.graphics().setDepth(0.5);
+    this.wave = this.waveEdge = this.frost = undefined;
+    if (world.kind === 'hearth') {
+      this.wave = this.add.rectangle(0, H, W, 8, 0xff5a10, 0.62).setOrigin(0, 0).setDepth(6.8).setVisible(false);
+      this.waveEdge = this.add.rectangle(0, H, W, 3, 0xfff0b0, 0.9).setOrigin(0, 0).setDepth(6.85).setBlendMode(Phaser.BlendModes.ADD).setVisible(false);
+      this.frost = this.add
+        .rectangle(ARENA.left * TS, (SKY + ARENA.roof) * TS, (ARENA.right - ARENA.left + 1) * TS, (ARENA.floor - ARENA.roof + 1) * TS, 0x9fe8ff, 0)
+        .setOrigin(0, 0)
+        .setDepth(6.7)
+        .setBlendMode(Phaser.BlendModes.ADD);
+    }
 
     for (const b of world.station) {
       this.add.image(b.x * TS, SKY * TS, `b-${b.key}`).setOrigin(0, 1).setDepth(1);
@@ -355,6 +371,7 @@ export class GameScene extends Phaser.Scene {
     this.syncLoose(dt);
     this.syncFlares(dt);
     this.syncSteam(dt);
+    this.syncHearth(dt);
     this.syncBubbles();
     this.syncSky();
     this.syncLight();
@@ -592,8 +609,15 @@ export class GameScene extends Phaser.Scene {
         // Meltwater pockets catch a little light, so you can spot fuel in the dark glacier.
         else if (tile === T.MELT) light((x + 0.5) * TS, (y + 0.5) * TS, 1.15 * TS, 0.4);
         else if (tile === T.VENT) light((x + 0.5) * TS, y * TS, (ventActive(w, x, y) ? 2.6 : 1.4) * TS, 0.5);
+        // A recorder's light blinks, so it can be found in the dark. The gate and the Hearth light themselves.
+        else if (tile === T.LOG) light((x + 0.5) * TS, (y + 0.5) * TS, (Math.floor(t / 600) % 2 ? 1.5 : 1.1) * TS, 0.55);
+        else if (tile === T.GATE) light((x + 0.5) * TS, (y + 0.5) * TS, 3 * TS, 0.7);
+        else if (tile === T.HVENT) light((x + 0.5) * TS, (y + 0.5) * TS, 4.5 * TS, 0.75);
+        else if (tile === T.HEART) light((x + 0.5) * TS, (y + 0.5) * TS, 6 * TS, 0.9);
       }
     }
+    // The machine lights its own chamber, dimly.
+    if (w.kind === 'hearth') light((ARENA.heart.x + 0.5) * TS, (SKY + ARENA.coreTop - 2) * TS, 15 * TS, 0.5);
   }
 
   /** High graphics: coloured light on top of the scene. It never shows more than the dark allows. */
@@ -646,6 +670,10 @@ export class GameScene extends Phaser.Scene {
         if (tile === T.MAGMA) glow((x + 0.5) * TS, (y + 0.5) * TS, 2.2 * TS, 0xff6a20, 0.1 * pulse);
         else if (tile === T.MELT) glow((x + 0.5) * TS, (y + 0.5) * TS, 1.1 * TS, 0x4aa8ff, 0.22);
         else if (tile === T.VENT) glow((x + 0.5) * TS, y * TS, (ventActive(w, x, y) ? 2 : 1.1) * TS, 0xff8a30, 0.2);
+        else if (tile === T.LOG) glow((x + 0.7) * TS, (y + 0.1) * TS, 0.6 * TS, 0xff3030, blink ? 0.7 : 0.15);
+        else if (tile === T.GATE) glow((x + 0.5) * TS, (y + 0.5) * TS, 1.6 * TS, 0xff7ac0, 0.16 * pulse);
+        else if (tile === T.HVENT) glow((x + 0.5) * TS, (y + 0.5) * TS, 2.6 * TS, 0xff8a30, 0.3 * pulse);
+        else if (tile === T.HEART) glow((x + 0.5) * TS, (y + 0.5) * TS, 3.4 * TS, 0xff4fa8, 0.45 * pulse);
       }
     }
   }
@@ -797,6 +825,36 @@ export class GameScene extends Phaser.Scene {
   }
 
 
+  /** The Hearth arena: frost gathers in the chamber before a pulse, and in the escape the heat front climbs the shaft. */
+  private syncHearth(dt: number): void {
+    const h = this.session.hearth();
+    if (!h || !this.wave || !this.waveEdge || !this.frost) return;
+    const warn = h.phase === 'fight' && h.pulseIn < HEARTH.warn;
+    this.frost.setFillStyle(0x9fe8ff, warn ? 0.06 + 0.22 * (1 - h.pulseIn / HEARTH.warn) * (0.7 + 0.3 * Math.sin(this.time.now / 45)) : 0);
+    const escaping = h.phase === 'escape';
+    this.wave.setVisible(escaping);
+    this.waveEdge.setVisible(escaping);
+    if (!escaping) return;
+    const y = h.wave * TS;
+    const H = this.session.world.h * TS;
+    this.wave.setPosition(0, y).setSize(this.wave.width, Math.max(8, H - y));
+    this.wave.setFillStyle(0xff5a10, 0.55 + 0.1 * Math.sin(this.time.now / 90));
+    this.waveEdge.setPosition(0, y - 1);
+    // The whole place is shaking loose.
+    this.rubbleTimer -= dt;
+    if (this.rubbleTimer <= 0) {
+      this.rubbleTimer = 0.12;
+      const view = this.cameras.main.worldView;
+      this.dust.setParticleTint(0x4b4872);
+      this.dust.emitParticleAt(view.x + Math.random() * view.width, view.y + Math.random() * view.height * 0.5, 1);
+      if (y < view.bottom + 4 * TS) {
+        this.sparks.setParticleTint(0xff8a30);
+        this.sparks.emitParticleAt(view.x + Math.random() * view.width, y, 2);
+      }
+      if (Math.random() < 0.25) this.cameras.main.shake(160, 0.004);
+    }
+  }
+
   private syncPeers(): void {
     const live = new Set<string>();
     const anim = Math.floor(this.time.now / 70) % 2;
@@ -820,7 +878,8 @@ export class GameScene extends Phaser.Scene {
         s.paint = p.paint;
       }
       const stuck = (p.flags & RIG_STALLED) > 0 && !(p.flags & RIG_WRECKED);
-      const label = stuck ? `${p.name} · ${p.flags & RIG_SOS ? 'SOS' : 'out of fuel'}` : p.name;
+      const name = p.stars ? `${'★'.repeat(Math.min(5, p.stars))} ${p.name}` : p.name;
+      const label = stuck ? `${name} · ${p.flags & RIG_SOS ? 'SOS' : 'out of fuel'}` : name;
       if (s.tag.text !== label) s.tag.setText(label).setColor(stuck ? '#ff8a7a' : '#cfe6ff');
       if (stuck) s.tag.setAlpha(Math.floor(this.time.now / 450) % 2 ? 1 : 0.55);
       else s.tag.setAlpha(0.85);
@@ -986,6 +1045,26 @@ export class GameScene extends Phaser.Scene {
       case 'flare':
         this.addFlare(e.x, e.y, 0);
         break;
+      case 'log':
+        this.sparks.setParticleTint(0xff7a30);
+        this.sparks.emitParticleAt(r.x * TS, r.y * TS - 4, 14);
+        this.floatText(r.x * TS, r.y * TS - 8, 'RECORDER', '#ffb070', 1400);
+        break;
+      case 'hearth-pulse':
+        this.cameras.main.flash(180, 150, 220, 255);
+        this.cameras.main.shake(220, e.hit ? 0.012 : 0.005);
+        break;
+      case 'hearth-vent':
+        this.cameras.main.shake(300, 0.01);
+        break;
+      case 'hearth-open':
+        this.cameras.main.flash(300, 255, 120, 190);
+        this.cameras.main.shake(500, 0.012);
+        break;
+      case 'hearth-broken':
+        this.cameras.main.flash(600, 255, 230, 200);
+        this.cameras.main.shake(1200, 0.02);
+        break;
       default:
         break;
     }
@@ -1101,6 +1180,8 @@ export class GameScene extends Phaser.Scene {
     this.resetRigLook();
     const y = pos.y * TS;
     const rest = this.restBelow(pos.x, pos.y);
+    // A rig frozen by the Hearth goes the way one out of fuel does: it frosts over.
+    if (cause === 'frost') cause = 'fuel';
     this.cine = { kind: 'death', cause, phase: rest - y > 3 ? 'drop' : 'main', t: 0, x: pos.x * TS, y, vy: 0, rest, tick: 0, marks: new Set(), done };
     this.rig.setFrame('idle0').setPosition(this.cine.x, y);
   }

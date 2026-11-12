@@ -5,8 +5,9 @@ import {
   BOARD_KEYS, PAINT_COUNT, PROTOCOL_VERSION, RIG_SOS, RIG_STALLED, RIG_THRUST, RIG_WRECKED, RigMode, cleanChat, cleanName, encodeDiffs, unpackInput,
   type BoardKey, type ClientMsg, type First, type MapDot, type PeerInfo, type Recap, type RigView, type SeasonRecord, type ServerMsg,
 } from '../src/net/protocol';
-import { applyAction, isAction } from '../src/sim/actions';
+import { applyAction, isAction, type ActResult, type Action } from '../src/sim/actions';
 import { Environment } from '../src/sim/env';
+import { atExit, atGate, enterHearth, hearthStep, leaveHearth, viewOf, winHearth, type HearthRun } from '../src/sim/hearth';
 import { pruneMarket, reviveMarket } from '../src/sim/market';
 import { newPlayer, type Player, type Rig } from '../src/sim/player';
 import { revivePlayer } from '../src/sim/revive';
@@ -65,6 +66,8 @@ export class Client {
   sos = false;
   sosAt = -Infinity;
   boardsAt = -Infinity;
+  /** The Hearth fight, while this miner's rig is in their own arena. */
+  hearth: HearthRun | null = null;
 
   constructor(
     readonly sock: Sock,
@@ -80,7 +83,7 @@ export class Client {
   }
 
   info(): PeerInfo {
-    return { id: this.id, name: this.name, paint: this.paint };
+    return { id: this.id, name: this.name, paint: this.paint, stars: this.player?.prestige ?? 0 };
   }
 }
 
@@ -230,6 +233,8 @@ export class Game {
     const saved = this.store.loadPlayer(acc.id, this.worldId, this.season);
     const p = saved ? revivePlayer(this.world, saved) : newPlayer(this.world, c.name);
     p.name = c.name;
+    // Stars belong to the account, so they come through a season reset.
+    p.prestige = acc.prestige;
     c.player = p;
     c.lastInputAt = this.now();
     const peers = [...this.clients].map((o) => o.info());
@@ -272,7 +277,7 @@ export class Game {
     if (!Number.isInteger(m.id) || !isAction(m.act)) return;
     const p = c.player!;
     const ev: SimEvent[] = [];
-    const res = applyAction(p, this.world, m.act, ev);
+    const res = this.apply(c, m.act, ev);
     c.send({ t: 'res', id: m.id, res });
     if (ev.length) {
       c.send({ t: 'ev', e: ev });
@@ -286,6 +291,56 @@ export class Game {
       this.extraDirty = true;
       this.broadcast({ t: 'market', m: this.world.market ?? {} });
     }
+  }
+
+  /** Run an action for a miner. The Hearth's gate, and anything that takes a rig out of the arena, is handled here. */
+  private apply(c: Client, act: Action, ev: SimEvent[]): ActResult {
+    const p = c.player!;
+    const run = c.hearth;
+    if (act.a === 'enter') {
+      if (run || !atGate(this.world, p)) return { ok: false, why: 'where' };
+      c.hearth = enterHearth(p, this.world);
+      c.hearth.world.dirty.length = 0;
+      c.send({ t: 'hearth', state: 'in' });
+      return { ok: true };
+    }
+    if (act.a === 'leave') {
+      if (!run || !atExit(run, p)) return { ok: false, why: 'where' };
+      leaveHearth(run.back, p);
+      this.endHearth(c);
+      return { ok: true };
+    }
+    if (run && (act.a === 'respawn' || (act.a === 'use' && act.k === 'beacon'))) {
+      // A new rig, or a recall, comes out in the dig site. There's no recalling out of the collapse.
+      if (act.a === 'use' && (run.phase !== 'fight' || (p.items.beacon ?? 0) <= 0 || p.rig.wrecked)) return { ok: false, why: 'state' };
+      if (act.a === 'respawn' && !p.rig.wrecked && !p.rig.stalled) return { ok: false, why: 'state' };
+      if (act.a === 'use') leaveHearth(run.back, p);
+      this.endHearth(c);
+    }
+    return applyAction(p, c.hearth?.world ?? this.world, act, ev);
+  }
+
+  /** The miner's rig is back in the dig site. */
+  private endHearth(c: Client): void {
+    if (!c.hearth) return;
+    c.hearth.env.detach();
+    c.hearth = null;
+    c.send({ t: 'hearth', state: 'out' });
+  }
+
+  /** A miner broke the Hearth and reached the surface: a star, a new rig on the pad, and everyone hears about it. */
+  private won(c: Client): void {
+    const p = c.player!;
+    const time = winHearth(c.hearth!, p, this.world);
+    c.hearth!.env.detach();
+    c.hearth = null;
+    this.store.setPrestige(c.id, p.prestige);
+    this.boardsMsg = null;
+    this.broadcast({ t: 'hearth-won', id: c.id, name: c.name, time, stars: p.prestige });
+    this.broadcast({ t: 'peer', p: c.info() }, c);
+    c.send({ t: 'me', player: p });
+    c.meDirty = false;
+    this.savePlayer(c);
   }
 
   /** A miner picked something up: note the season's first of each mineral, and tell everyone about firsts and big finds. */
@@ -409,6 +464,8 @@ export class Game {
 
   /** Effects other players should see, like blasts and a rig's end. */
   private shareEvent(c: Client, e: SimEvent): void {
+    // What happens in a miner's Hearth arena is theirs alone.
+    if (c.hearth) return;
     if (e.t === 'blast' || e.t === 'flare' || e.t === 'wrecked') this.broadcast({ t: 'fx', e, by: c.id }, c);
   }
 
@@ -421,12 +478,15 @@ export class Game {
     this.world.rescue = this.clients.size > 1;
     for (const c of this.clients) {
       const p = c.player!;
+      // A rig in the Hearth runs in its own arena.
+      const world = c.hearth?.world ?? this.world;
+      if (c.hearth) world.time = this.world.time;
       c.budget = Math.min(c.budget + 1.05, MAX_BUDGET);
       const ev: SimEvent[] = [];
       let n = 0;
       while (c.budget >= 1 && c.queue.length) {
         const [seq, bits] = c.queue.shift()!;
-        step(p, this.world, unpackInput(bits), STEP, ev);
+        step(p, world, unpackInput(bits), STEP, ev);
         c.ack = seq;
         c.budget--;
         c.steps++;
@@ -434,22 +494,23 @@ export class Game {
       }
       // A player who stops sending (a hidden tab, a dropped connection) still falls.
       if (n === 0 && c.budget >= 1 && now - c.lastInputAt > IDLE_AFTER_MS) {
-        step(p, this.world, noInput(), STEP, ev);
+        step(p, world, noInput(), STEP, ev);
         c.budget--;
         c.steps++;
       }
       for (const e of ev) {
         this.shareEvent(c, e);
-        if (e.t === 'pickup' || e.t === 'reserve') c.meDirty = true;
+        if (e.t === 'pickup' || e.t === 'reserve' || e.t === 'log') c.meDirty = true;
         if (e.t === 'pickup') this.found(c, e.mineral);
       }
+      if (c.hearth) this.tickHearth(c);
       // A stalled rig calls for help by itself. (The page can't be trusted to time it: its
       // prediction stalls a few ticks before the rig does here.)
       if (p.rig.stalled && !c.sos) this.sos(c);
       else if (c.sos && !p.rig.stalled) c.sos = false;
     }
 
-    const out = this.env.step([...this.clients].map((c) => c.player!), STEP);
+    const out = this.env.step([...this.clients].filter((c) => !c.hearth).map((c) => c.player!), STEP);
     for (const e of out.fx) this.broadcast({ t: 'fx', e, by: '' });
     for (const [p, e] of out.personal) {
       for (const c of this.clients) {
@@ -474,7 +535,7 @@ export class Game {
     }
 
     if (this.tickNo % 3 === 0) {
-      for (const c of this.clients) c.send({ t: 'snap', ack: c.ack, rig: c.player!.rig, cargo: c.player!.cargo, items: c.player!.items, stats: c.player!.stats });
+      for (const c of this.clients) c.send({ t: 'snap', ack: c.ack, rig: c.player!.rig, cargo: c.player!.cargo, items: c.player!.items, stats: c.player!.stats, ...(c.hearth ? { h: viewOf(c.hearth) } : {}) });
     }
     if (this.tickNo % 6 === 0) this.sendRigs();
     if (this.tickNo % 60 === 0) this.sendMap();
@@ -488,6 +549,27 @@ export class Game {
     if (now - this.lastSave > SAVE_EVERY_MS) this.save();
   }
 
+  /** One tick of a miner's Hearth fight: the pulses, the ice, the heat front. Only they are told. */
+  private tickHearth(c: Client): void {
+    const run = c.hearth!;
+    const ev: SimEvent[] = [];
+    const won = hearthStep(run, c.player!, STEP, ev);
+    const w = run.world;
+    if (w.dirty.length) {
+      const d: number[] = [];
+      const seen = new Set<number>();
+      for (const i of w.dirty) {
+        if (seen.has(i)) continue;
+        seen.add(i);
+        d.push(i, w.tiles[i]);
+      }
+      w.dirty.length = 0;
+      c.send({ t: 'tiles', d, h: 1 });
+    }
+    if (ev.length) c.send({ t: 'ev', e: ev });
+    if (won) this.won(c);
+  }
+
   private flags(c: Client): number {
     const r: Rig = c.player!.rig;
     return (r.thrusting ? RIG_THRUST : 0) | (r.wrecked ? RIG_WRECKED : 0) | (r.stalled ? RIG_STALLED : 0) | (c.sos ? RIG_SOS : 0);
@@ -496,13 +578,15 @@ export class Game {
   /** Everyone's position for the map, about once a second. Only worth sending when there's someone to find. */
   private sendMap(): void {
     if (this.clients.size < 2) return;
-    const p: MapDot[] = [...this.clients].map((c) => [c.id, Math.round(c.player!.rig.x * 10) / 10, Math.round(c.player!.rig.y * 10) / 10, this.flags(c)]);
+    const p: MapDot[] = [...this.clients].filter((c) => !c.hearth).map((c) => [c.id, Math.round(c.player!.rig.x * 10) / 10, Math.round(c.player!.rig.y * 10) / 10, this.flags(c)]);
     this.broadcast({ t: 'map', p });
   }
 
   private sendRigs(): void {
     const views: { c: Client; v: RigView }[] = [];
     for (const c of this.clients) {
+      // A rig in the Hearth isn't anywhere the others can see.
+      if (c.hearth) continue;
       const r = c.player!.rig;
       const mode = r.drill ? (r.drill.dir === 'down' ? RigMode.DrillDown : RigMode.DrillSide) : r.grounded && Math.abs(r.vx) > 0.3 ? RigMode.Moving : RigMode.Idle;
       const flags = this.flags(c);
@@ -510,7 +594,7 @@ export class Game {
     }
     for (const c of this.clients) {
       const me = c.player!.rig;
-      const r = views.filter((o) => o.c !== c && Math.abs(o.v[1] - me.x) < VIEW_X && Math.abs(o.v[2] - me.y) < VIEW_Y).map((o) => o.v);
+      const r = c.hearth ? [] : views.filter((o) => o.c !== c && Math.abs(o.v[1] - me.x) < VIEW_X && Math.abs(o.v[2] - me.y) < VIEW_Y).map((o) => o.v);
       c.send({ t: 'rigs', r, online: this.clients.size });
     }
   }
@@ -530,6 +614,8 @@ export class Game {
   drop(c: Client): void {
     if (!this.clients.has(c)) return;
     this.savePlayer(c);
+    c.hearth?.env.detach();
+    c.hearth = null;
     this.clients.delete(c);
     if (!this.clients.size && this.occupiedAt !== null) {
       // Last one out: the day clock stops until somebody comes back.
@@ -544,8 +630,10 @@ export class Game {
   private savePlayer(c: Client): void {
     if (!c.player) return;
     const p = c.player;
+    // A rig in the Hearth is saved back at the gate: the fight isn't kept.
+    const back = c.hearth?.back;
     // Save where the dig started, so a reload never lands half inside rock.
-    const state = p.rig.drill ? { ...p, rig: { ...p.rig, x: p.rig.drill.sx, y: p.rig.drill.sy, drill: null } } : p;
+    const state = back ? { ...p, rig: { ...p.rig, x: back.x, y: back.y, vx: 0, vy: 0, drill: null } } : p.rig.drill ? { ...p, rig: { ...p.rig, x: p.rig.drill.sx, y: p.rig.drill.sy, drill: null } } : p;
     this.store.savePlayer(c.id, this.worldId, this.season, state);
   }
 

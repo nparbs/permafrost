@@ -12,12 +12,14 @@ import { NetSession } from './net/netSession';
 import { PAINT_COUNT } from './net/protocol';
 import { dayNumber } from './sim/daytime';
 import { ITEMS, ITEM_ORDER } from './sim/items';
+import { CREDITS, LOGS, RADIO_DEPTH, RADIO_LOGS, type RadioLine } from './sim/story';
+import { STAR_MAX, STAR_SHARE } from './sim/market';
 import { BOUNTY_BONUS, bountyOf, priceOf } from './sim/market';
 import { cargoCount, cargoValue, statsOf, type HurtCause } from './sim/player';
 import { fuelToSurface, rigDepth, type Input } from './sim/rig';
 import { MINERALS, MINERAL_INDEX, T, tileDef } from './sim/tiles';
 import { blizzardAt, ventActive } from './sim/weather';
-import { UI, esc, layerForDepth, money, timeLeft, whyText, type TitleInfo } from './ui/ui';
+import { UI, clock, esc, layerForDepth, money, stars, timeLeft, whyText, type TitleInfo } from './ui/ui';
 import { METERS_PER_TILE, SKY } from './sim/world';
 
 const sfx = new Sfx();
@@ -102,6 +104,7 @@ function use(s: GameSession): void {
   homeWarned = false;
   lastDay = 0;
   lastBounty = '';
+  radioDeep = -1;
   ui.setBusy(false);
   ui.hideDeath();
   scene()?.scene.restart({ session: s, onFrame, onCue } satisfies SceneData);
@@ -132,13 +135,31 @@ let recapShown = false;
 /** The day's bounty ore last announced, so a new one gets a note. */
 let lastBounty = '';
 
+/** The deepest the miner had been as of the last frame, to say the radio lines for new depths. -1 until a session's first frame. */
+let radioDeep = -1;
+
+/** A line from the station crew over the radio. */
+function radio(line: RadioLine, delay = 0): void {
+  const s = session;
+  setTimeout(() => {
+    if (session !== s) return;
+    ui.toast(`<b>${line.who}:</b> "${esc(line.text)}"`, 'radio', 9000);
+    sfx.click();
+  }, delay);
+}
+
+/** Show the world the session's rig is in now (the dig site or the Hearth arena). */
+function reshow(): void {
+  scene()?.scene.restart({ session, onFrame, onCue } satisfies SceneData);
+}
+
 /** A death or arrival scene is playing: the rig is out of the player's hands. */
 let cine = false;
 /** A scene to start on the next frame, once the game scene is showing this session. */
 let queued: (() => void) | null = null;
 
 /** The sky crane sets the rig down on the pad: at the start of a game, and after every death. */
-function arrive(kind: 'new' | 'respawn'): void {
+function arrive(kind: 'new' | 'respawn' | 'prestige'): void {
   const s = session;
   cine = true;
   ui.setBusy(true);
@@ -153,7 +174,10 @@ function arrive(kind: 'new' | 'respawn'): void {
       s.paused = false;
       if (s instanceof LocalSession) saveSession(s);
       if (kind === 'new') ui.toast('Depot: "Tank\'s full. Sell what you dig at the Assay Office, and watch that gauge."', '', 5000);
-      else ui.toast('A fresh rig on the pad: full tank, full hull.', 'good', 3200);
+      else if (kind === 'prestige') {
+        const n = s.player.prestige;
+        ui.toast(`Prestige ${stars(n)}. A new rig, and ore now sells for <b>${Math.round(STAR_SHARE * Math.min(STAR_MAX, n) * 100)}% more</b>.`, 'good', 7000);
+      } else ui.toast('A fresh rig on the pad: full tank, full hull.', 'good', 3200);
       // Back for a new season: show how the last one ended, once.
       if (kind === 'new' && s.recap && !recapShown) {
         recapShown = true;
@@ -180,6 +204,25 @@ function die(cause: HurtCause): void {
     s.act({ a: 'respawn' });
     ui.hideDeath();
     arrive('respawn');
+  });
+}
+
+/** The Hearth is broken and the rig is out: the credits, then a new rig on the pad with a star on it. */
+function won(time: number): void {
+  const s = session;
+  cine = true;
+  ui.closePanel(false);
+  ui.closeChat();
+  ui.setBusy(true);
+  s.releaseInput();
+  s.paused = true;
+  reshow();
+  sfx.sell();
+  if (s instanceof LocalSession) saveSession(s);
+  ui.showCredits(CREDITS, `Hearth broken in ${clock(time)}. Prestige ${stars(s.player.prestige)}`, () => {
+    if (session !== s) return;
+    cine = false;
+    arrive('prestige');
   });
 }
 
@@ -301,6 +344,10 @@ function onFrame(game: GameScene): void {
     const known = session.player.seen.includes(bounty.key);
     ui.toast(`Assayer: "Today's bounty is on <b style="color:${known ? bounty.light : '#fff'}">${known ? bounty.name : 'something you haven\'t dug up yet'}</b>. It pays ${Math.round((BOUNTY_BONUS - 1) * 100)}% extra."`, '', 5200);
   }
+  // The station crew have something to say the first time a miner passes each depth.
+  const deep = session.player.stats.deepest;
+  if (radioDeep >= 0) for (const l of RADIO_DEPTH) if (radioDeep < l.depth && deep >= l.depth) radio(l);
+  radioDeep = deep;
   const today = dayNumber(session.world);
   if (lastDay && today > lastDay) ui.toast(`Sunrise. <b>Day ${today}</b> at Rime Station.`, '', 2600);
   lastDay = today;
@@ -360,6 +407,7 @@ const LOST_TO: Record<HurtCause, string> = {
   magma: 'magma',
   heat: 'overheated',
   steam: 'steam vent',
+  frost: 'frozen by the Hearth',
 };
 
 function onEvent(e: SessionEvent): void {
@@ -383,6 +431,7 @@ function onEvent(e: SessionEvent): void {
       break;
     case 'hurt':
       if (e.cause === 'gas') ui.toast(`Gas pocket! −${Math.ceil(e.amount)} hull`, 'bad');
+      else if (e.cause === 'frost') ui.toast(`Freezing pulse! −${Math.ceil(e.amount)} hull. Be in the air when it lands.`, 'bad', 3000);
       else if (e.cause === 'rock') ui.toast(`Rockfall! −${Math.ceil(e.amount)} hull`, 'bad');
       else if (e.amount >= 1) ui.toast(`Hard landing: −${Math.ceil(e.amount)} hull`, 'bad');
       sfx.thud(Math.min(1, e.amount / 20));
@@ -485,6 +534,54 @@ function onEvent(e: SessionEvent): void {
     case 'market':
       ui.refreshIf('assay');
       break;
+    case 'log': {
+      const log = LOGS[e.id];
+      if (!log) break;
+      const n = session.player.logs.length;
+      sfx.find();
+      ui.noteLog(e.id);
+      ui.toast(`Recorder found: <b>${esc(log.title)}</b> (${n} of ${LOGS.length}). Play it back at the Comms Tower.`, 'good', 5200);
+      const line = RADIO_LOGS.find((l) => l.count === n);
+      if (line) radio(line, 2600);
+      break;
+    }
+    case 'hearth-enter':
+      reshow();
+      ui.showBanner('The Hearth', 'Break the four vents');
+      sfx.rumble();
+      break;
+    case 'hearth-leave':
+      reshow();
+      break;
+    case 'hearth-charge':
+      sfx.alarm();
+      hint('pulse', 'The Hearth is drawing breath. Be off the ground when the pulse lands.');
+      break;
+    case 'hearth-pulse':
+      sfx.freeze();
+      break;
+    case 'hearth-vent':
+      sfx.boom();
+      ui.toast(e.left ? `Vent down. <b>${e.left}</b> to go.` : 'The last vent is down.', 'good', 2600);
+      break;
+    case 'hearth-open':
+      sfx.rumble();
+      ui.toast('The heart is exposed. One more charge, from on top of the machine.', 'warn', 6000);
+      break;
+    case 'hearth-broken':
+      sfx.boom();
+      sfx.rumble();
+      ui.showBanner('The Hollow is coming down', 'Climb');
+      radio({ who: 'Mechanic', text: 'Every needle up here just hit the stop. Whatever you did, go up. Now.' }, 1500);
+      break;
+    case 'hearth-won':
+      if (!e.mine) {
+        sfx.find();
+        ui.toast(`${esc(e.name)} broke the Hearth in ${clock(e.time)}. ${stars(e.stars)}`, 'good', 6000);
+        break;
+      }
+      won(e.time);
+      break;
     case 'boards':
       ui.refreshIf('boards');
       break;
@@ -534,6 +631,12 @@ window.addEventListener('keydown', (e) => {
   if (e.code === 'KeyM' && !e.repeat && !ui.titleOpen && !ui.chatOpen) {
     sfx.setMuted(!sfx.muted);
     ui.toast(sfx.muted ? 'Sound off' : 'Sound on', '', 1000);
+    return;
+  }
+  if (ui.creditsOpen) {
+    // The credits take Space, Enter and Esc themselves.
+    eaten.add(e.code);
+    ui.handleKey(e);
     return;
   }
   if (cine && !ui.titleOpen) {

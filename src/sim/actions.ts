@@ -17,7 +17,10 @@ export type Action =
   | { a: 'buy'; k: ItemKey }
   /** Start over at the station after a wreck, or give up on a stall. */
   | { a: 'respawn' }
-  | { a: 'use'; k: ItemKey };
+  | { a: 'use'; k: ItemKey }
+  /** Step through the Hearth's gate, and back out of it. Whoever runs the game (a session or the server) handles these. */
+  | { a: 'enter' }
+  | { a: 'leave' };
 
 export type Why = 'cash' | 'max' | 'where' | 'state' | 'bad';
 
@@ -46,6 +49,8 @@ export function isAction(x: unknown): x is Action {
     case 'sell':
     case 'repair':
     case 'respawn':
+    case 'enter':
+    case 'leave':
       return true;
     case 'refuel':
       return o.litres === undefined || (typeof o.litres === 'number' && o.litres > 0 && o.litres <= 1000);
@@ -88,5 +93,9 @@ export function applyAction(p: Player, world: World, act: Action, ev: SimEvent[]
       return { ok: true, amount: respawn(p, world) };
     case 'use':
       return useItem(p, world, act.k, ev) ? { ok: true } : { ok: false, why: 'state' };
+    case 'enter':
+    case 'leave':
+      // The Hearth belongs to whoever is running the game: see LocalSession.act and the server.
+      return { ok: false, why: 'where' };
   }
 }

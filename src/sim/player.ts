@@ -1,7 +1,7 @@
 // A player's persistent state: the rig, its upgrades, cash, cargo and items.
 
 import { newItems, type ItemKey } from './items';
-import { priceOf } from './market';
+import { priceOf, starBonus } from './market';
 import { MINERALS } from './tiles';
 import { newUpgrades, tierOf, type Upgrades } from './upgrades';
 import type { World } from './world';
@@ -13,7 +13,7 @@ export const RIG_H = 0.75;
 export type DrillDir = 'left' | 'right' | 'down';
 
 /** What damaged or finished off a rig. 'fuel' is an empty tank with nobody around to help. */
-export type HurtCause = 'fall' | 'gas' | 'magma' | 'heat' | 'rock' | 'steam' | 'fuel';
+export type HurtCause = 'fall' | 'gas' | 'magma' | 'heat' | 'rock' | 'steam' | 'fuel' | 'frost';
 
 export interface Drill {
   tx: number;
@@ -63,6 +63,10 @@ export interface PlayerStats {
   deaths: number;
   /** Relics dug up. */
   relics: number;
+  /** Times the Hearth was broken. */
+  hearths: number;
+  /** The fastest Hearth, from the gate to the surface, in seconds. 0 if never. */
+  hearthBest: number;
 }
 
 export interface Player {
@@ -76,6 +80,10 @@ export interface Player {
   stats: PlayerStats;
   /** Mineral keys this player has dug up at least once. */
   seen: string[];
+  /** Halvorsen recorders found, as indices into LOGS (see story.ts). */
+  logs: number[];
+  /** Prestige stars: one for each time the Hearth was broken. Each adds to what ore sells for. */
+  prestige: number;
 }
 
 export interface Stats {
@@ -127,8 +135,10 @@ export function newPlayer(world: World, name = 'Miner'): Player {
       x: 0, y: 0, vx: 0, vy: 0, facing: 1, grounded: true, thrusting: false, drill: null,
       fuel: 0, hull: 0, stalled: false, wrecked: false, wreckedBy: null, cold: false, hot: false, scald: false,
     },
-    stats: { deepest: 0, earned: 0, trips: 0, dug: 0, rescues: 0, deaths: 0, relics: 0 },
+    stats: { deepest: 0, earned: 0, trips: 0, dug: 0, rescues: 0, deaths: 0, relics: 0, hearths: 0, hearthBest: 0 },
     seen: [],
+    logs: [],
+    prestige: 0,
   };
   // One Fuel Cell to start with: it fires by itself the first time the tank runs dry.
   p.items.fuelcell = 1;
@@ -150,5 +160,5 @@ export function cargoCount(p: Player): number {
 export function cargoValue(p: Player, world: World): number {
   let v = 0;
   for (const m of MINERALS) v += (p.cargo[m.key] ?? 0) * priceOf(world, m);
-  return v;
+  return v + starBonus(p.prestige, v);
 }

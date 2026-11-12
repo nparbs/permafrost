@@ -11,6 +11,7 @@ An original drill-and-dig game on a frozen planet, with online play planned. See
 - All art is drawn in `src/game/textures.ts` and all sound in `src/game/audio.ts`. Don't add image or audio files.
 - Headless check: start `npm run dev`, then run `npm run shots` (or `URL=http://localhost:PORT/ node scripts/screenshots.mjs desktop phone`). `window.pf` exposes `game`, `ui` and `session`.
 - Phone layouts: check at 640x360 and 360x640 at the smallest. Nothing smaller needs to work.
+- The Hearth arena is a second `World` (`kind: 'hearth'`). `session.world` is whichever one the rig is in, so don't cache it across frames. Online, only the server runs the fight (`hearthStep`); the page just predicts the rig.
 - Tone: a lonely sci-fi mystery with dry, working-class humor from the station staff.
 
 ## Hosting (from v0.2)

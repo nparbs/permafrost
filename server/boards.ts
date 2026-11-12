@@ -13,15 +13,17 @@ export interface Entry {
 
 const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : 0);
 
-/** A miner's number on a board. */
-export const scoreOf = (stats: Partial<PlayerStats> | undefined, key: BoardKey) => Math.floor(num(stats?.[key]));
+/** A miner's number on a board. The Hearth board is their fastest time in seconds. */
+export const scoreOf = (stats: Partial<PlayerStats> | undefined, key: BoardKey) => (key === 'hearth' ? Math.round(num(stats?.hearthBest)) : Math.floor(num(stats?.[key])));
 
 /** Everyone with something to show on a board, best first. Ties go to the name, so the order is stable. */
 export function ranked(entries: Entry[], key: BoardKey): BoardRow[] {
+  // The fastest Hearth wins; every other board is "most".
+  const dir = key === 'hearth' ? -1 : 1;
   return entries
     .map((e) => ({ id: e.id, name: e.name, v: scoreOf(e.stats, key) }))
     .filter((r) => r.v > 0)
-    .sort((a, b) => b.v - a.v || a.name.localeCompare(b.name) || a.id.localeCompare(b.id));
+    .sort((a, b) => (b.v - a.v) * dir || a.name.localeCompare(b.name) || a.id.localeCompare(b.id));
 }
 
 export function standings(season: number, entries: Entry[], firsts: First[]): Standings {
